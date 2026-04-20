@@ -1,0 +1,6 @@
+{
+  "name": "Trend Report Auto-Scraper",
+  "description": "다양한 웹사이트의 트렌드 리포트를 자동으로 색인하여 추출, 저장하는 휴리스틱 기반 풀스택 크롤러 앱입니다.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
