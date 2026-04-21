@@ -2,7 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import { Plus, Trash2, Play, Download, AlertCircle, CheckCircle2, ChevronRight, Info } from 'lucide-react';
 
 export default function App() {
-  const [urls, setUrls] = useState<string[]>(['https://www.google.com/']);
+  const [urls, setUrls] = useState<string[]>([
+    'https://www.kiet.re.kr/research/issueList',
+    'https://www.kiet.re.kr/research/economyDetailList?detail_gubun=C',
+    'https://www.kiet.re.kr/trends/indbriefList',
+    'https://www.kiet.re.kr/trends/china',
+    'https://www.kiet.re.kr/trends/pointerList'
+  ]);
   const [newUrl, setNewUrl] = useState('');
   const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
@@ -91,14 +97,21 @@ export default function App() {
           <div className="bg-white rounded-xl border p-5 shadow-sm flex flex-col lg:h-1/2 min-h-[300px]">
             <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Target Sources</h2>
             <div className="flex flex-col gap-2 flex-1 overflow-y-auto custom-scrollbar pr-1">
-              {urls.map((u) => (
-                <div key={u} className="p-2.5 bg-slate-50 rounded-lg border border-slate-100 flex items-center justify-between group">
-                  <span className="text-xs truncate font-medium text-slate-600 flex-1 mr-2">{u}</span>
-                  <button onClick={() => removeUrl(u)} className="text-slate-300 hover:text-red-500 transition-colors">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
+              {urls.map((u) => {
+                const isKiet = u.includes('kiet.re.kr');
+                return (
+                  <div key={u} className="p-2.5 bg-slate-50 rounded-lg border border-slate-100 flex flex-col gap-1.5 group">
+                    <div className="flex items-center justify-between">
+                      {isKiet && <span className="bg-indigo-100 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider w-max">KIET</span>}
+                      {!isKiet && <span className="bg-slate-200 text-slate-700 text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider w-max">OTHER</span>}
+                      <button onClick={() => removeUrl(u)} className="text-slate-300 hover:text-red-500 transition-colors ml-auto">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <span className="text-xs truncate font-medium text-slate-600 block">{u}</span>
+                  </div>
+                );
+              })}
               {urls.length === 0 && <p className="text-slate-400 text-xs italic">No URLs designated.</p>}
             </div>
             <div className="mt-4 pt-3 border-t">
