@@ -59,7 +59,12 @@ export async function startScrapingJob(jobId: string) {
       
       const isKIET = targetUrl.includes('kiet.re.kr');
       const isKIETChina = isKIET && targetUrl.includes('trends/china');
-      
+      const isKDI = targetUrl.includes('kdi.re.kr');
+      const isSTIS = targetUrl.includes('stis.or.kr');
+      const isKOCCA = targetUrl.includes('kocca.kr');
+      const isLGBR = targetUrl.includes('lgbr.co.kr');
+      const isKOTRA = targetUrl.includes('kotra.or.kr');
+
       // Compute pages to crawl for this targetUrl
       let pagesToCrawl: string[] = [];
       
@@ -86,12 +91,28 @@ export async function startScrapingJob(jobId: string) {
           for (let i = 1; i <= 30; i++) {
               if (i === 1) {
                   pagesToCrawl.push(targetUrl);
-              } else if (isKIET) {
+              } else if (isKIET || isKDI) {
                   const u = new URL(targetUrl);
                   u.searchParams.set('pg', i.toString());
                   pagesToCrawl.push(u.toString());
+              } else if (isSTIS) {
+                  const u = new URL(targetUrl);
+                  u.searchParams.set('page', i.toString());
+                  pagesToCrawl.push(u.toString());
+              } else if (isKOCCA) {
+                  let u = targetUrl;
+                  if (u.includes('?')) u += `&pageIndex=${i}`; else u += `?pageIndex=${i}`;
+                  pagesToCrawl.push(u);
+              } else if (isLGBR) {
+                  let u = targetUrl;
+                  if (u.includes('?')) u += `&startIndex=${(i - 1) * 10}`; else u += `?startIndex=${(i - 1) * 10}`;
+                  pagesToCrawl.push(u);
+              } else if (isKOTRA) {
+                  let u = targetUrl;
+                  if (u.includes('?')) u += `&pageNo=${i}`; else u += `?pageNo=${i}`;
+                  pagesToCrawl.push(u);
               } else {
-                  // For non-KIET, we don't automatically paginate right now unless requested
+                  // For non-KIET/non-KDI, we don't automatically paginate right now unless requested
                   break;
               }
           }
@@ -187,10 +208,27 @@ export async function startScrapingJob(jobId: string) {
                     anchors.each((_, a) => {
                         const text = $(a).text().trim();
                         const href = $(a).attr('href');
-                        if (text.length > longestLength && href && !href.startsWith('javascript:')) {
-                            longestLength = text.length;
-                            longestAnchor = text;
-                            longestHref = href;
+                        const onclick = $(a).attr('onclick');
+                        if (text.length > longestLength) {
+                            if (isLGBR && href && href.includes('fnView')) {
+                                const m = href.match(/fnView\((\d+)\)/);
+                                if (m) {
+                                    longestLength = text.length;
+                                    longestAnchor = text;
+                                    longestHref = 'https://www.lgbr.co.kr/report/viewLayer.alone?idx=' + m[1];
+                                }
+                            } else if (isKOTRA && onclick && onclick.includes('fn_select_kotra_board_detail')) {
+                                const m = onclick.match(/fn_select_kotra_board_detail\([^,]+,\s*(\d+),\s*(\d+),\s*(\d+)\)/);
+                                if (m) {
+                                    longestLength = text.length;
+                                    longestAnchor = text;
+                                    longestHref = `https://dream.kotra.or.kr/kotranews/cms/news/actionKotraBoardDetail.do?SITE_NO=3&MENU_ID=180&CONTENTS_NO=1&bbsGbn=${m[2]}&bbsSn=${m[3]}&pNttSn=${m[1]}`;
+                                }
+                            } else if (href && !href.startsWith('javascript:')) {
+                                longestLength = text.length;
+                                longestAnchor = text;
+                                longestHref = href;
+                            }
                         }
                     });
 
@@ -224,7 +262,7 @@ export async function startScrapingJob(jobId: string) {
             }
 
             // Pagination Break Logic
-            if (!isKIETChina && isKIET) {
+            if (!isKIETChina && (isKIET || isKDI || isSTIS || isKOCCA || isLGBR || isKOTRA)) {
                // If we found dates, and the oldest date on this page is older than our start target, we don't need to load more pages
                if (foundValidDates && oldestDateOnPage && oldestDateOnPage < startParsed) {
                    JobManager.addLog(jobId, 'info', `  => 오래된 게시물(시작일 이전) 감지, 페이지 순회를 중단합니다.`);
@@ -306,40 +344,75 @@ export async function startScrapingJob(jobId: string) {
                 // File name sanitization (keep spaces, allow basic korean/english/numbers, remove invalid chars)
                 const safeTitle = reportTitle.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().substring(0, 100);
 
+                if (isKOTRA) {
+                    JobManager.addLog(jobId, 'info', `     => KOTRA 특화: 텍스트 및 첨부 이미지 스크래핑 진행...`);
+                    const images = $detail('.board_cont img, .content img, body img').map((i, el) => {
+                        return { src: $detail(el).attr('src'), alt: $detail(el).attr('alt') || `image_${i}` };
+                    }).get();
+
+                    let imageCount = 0;
+                    for (const img of images) {
+                        try {
+                            if (img.src && !img.src.startsWith('data:')) {
+                                const absoluteSrc = new URL(img.src, detail.url).toString();
+                                const agent = new https.Agent({ rejectUnauthorized: false });
+                                const imgRes = await axios.get(absoluteSrc, { responseType: 'arraybuffer', httpsAgent: agent, timeout: 10000 });
+                                
+                                let safeAlt = img.alt ? img.alt : '';
+                                if (!safeAlt) {
+                                  const parts = absoluteSrc.split('/');
+                                  const filename = parts.pop()?.split('?')[0];
+                                  if (filename) safeAlt = filename.split('.')[0];
+                                }
+                                safeAlt = safeAlt.replace(/[\/\\:*?"<>|]/g, '-').trim().substring(0, 50) || `img_${imageCount}`;
+                                const imgName = `${safeTitle}_${safeAlt}.jpg`;
+                                const imgPath = path.join(localPath, imgName);
+                                fs.writeFileSync(imgPath, imgRes.data);
+                                imageCount++;
+                            }
+                        } catch(e) { }
+                    }
+                    if (imageCount > 0) {
+                        JobManager.addLog(jobId, 'success', `     ✅ 이미지 ${imageCount}개 다운로드 완료`);
+                    }
+                }
+
                 // Heuristic: Find Download Link
                 let downloadUrl = '';
-                $detail('a, button').each((_, el) => {
-                   const isButton = el.tagName === 'button';
-                   const href = isButton ? null : $detail(el).attr('href');
-                   const onclick = isButton ? $detail(el).attr('onclick') : null;
-                   const text = $detail(el).text();
-                   
-                   let rawUrl = '';
-                   if (!isButton && href && !href.startsWith('javascript:')) {
-                       rawUrl = href;
-                   } else if (isButton && onclick) {
-                       const match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
-                       if (match && match[1]) {
-                           rawUrl = match[1];
-                       } else {
-                           const windowOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
-                           if (windowOpenMatch && windowOpenMatch[1]) {
-                               rawUrl = windowOpenMatch[1];
+                if (!isKOTRA) {
+                    $detail('a, button').each((_, el) => {
+                       const isButton = el.tagName === 'button';
+                       const href = isButton ? null : $detail(el).attr('href');
+                       const onclick = isButton ? $detail(el).attr('onclick') : null;
+                       const text = $detail(el).text();
+                       
+                       let rawUrl = '';
+                       if (!isButton && href && !href.startsWith('javascript:')) {
+                           rawUrl = href;
+                       } else if (isButton && onclick) {
+                           const match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
+                           if (match && match[1]) {
+                               rawUrl = match[1];
+                           } else {
+                               const windowOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
+                               if (windowOpenMatch && windowOpenMatch[1]) {
+                                   rawUrl = windowOpenMatch[1];
+                               }
                            }
                        }
-                   }
 
-                   if (!rawUrl) return;
+                       if (!rawUrl) return;
 
-                   // Check conditions
-                   if (rawUrl.toLowerCase().includes('.pdf') || 
-                       /(다운|pdf|첨부|원문|file\/?download)/i.test(text) ||
-                       /(file\/?download)/i.test(rawUrl)) {
-                       try {
-                         downloadUrl = new URL(rawUrl, detail.url).toString();
-                       } catch {}
-                   }
-                });
+                       // Check conditions
+                       if (rawUrl.toLowerCase().includes('.pdf') || 
+                           /(다운|pdf|첨부|원문|file\/?download)/i.test(text) ||
+                           /(file\/?download)/i.test(rawUrl)) {
+                           try {
+                             downloadUrl = new URL(rawUrl, detail.url).toString();
+                           } catch {}
+                       }
+                    });
+                }
 
 
                 if (downloadUrl) {
@@ -347,7 +420,7 @@ export async function startScrapingJob(jobId: string) {
                     // Download File (PDF or other extension)
                     try {
                        const extensionUrl = downloadUrl.toLowerCase().split('.').pop()?.split('?')[0];
-                       const finalExtension = (extensionUrl && extensionUrl.length <= 4 && extensionUrl !== 'pdf') ? extensionUrl : 'pdf';
+                       const fallbackExtension = (extensionUrl && extensionUrl.length <= 4 && extensionUrl !== 'pdf') ? extensionUrl : 'pdf';
                        
                        const agent = new https.Agent({ rejectUnauthorized: false });
                        const response = await axios({
@@ -358,7 +431,21 @@ export async function startScrapingJob(jobId: string) {
                            httpsAgent: agent
                        });
                        
-                       const finalFileName = `${safeTitle}.${finalExtension}`;
+                       let headerExtension = '';
+                       const contentDisposition = response.headers['content-disposition'];
+                       if (contentDisposition) {
+                           const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i);
+                           if (filenameMatch && filenameMatch[1]) {
+                               const hdFilename = filenameMatch[1].replace(/['"]/g, '');
+                               const hdExt = hdFilename.split('.').pop()?.toLowerCase();
+                               if (hdExt && hdExt.length <= 4) {
+                                   headerExtension = hdExt;
+                               }
+                           }
+                       }
+                       
+                       const appliedExtension = headerExtension || fallbackExtension;
+                       const finalFileName = `${safeTitle}.${appliedExtension}`;
 
                        const filePath = path.join(localPath, finalFileName);
                        fs.writeFileSync(filePath, response.data);

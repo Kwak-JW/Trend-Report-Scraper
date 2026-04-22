@@ -7,7 +7,15 @@ export default function App() {
     'https://www.kiet.re.kr/research/economyDetailList?detail_gubun=C',
     'https://www.kiet.re.kr/trends/indbriefList',
     'https://www.kiet.re.kr/trends/china',
-    'https://www.kiet.re.kr/trends/pointerList'
+    'https://www.kiet.re.kr/trends/pointerList',
+    'https://www.kdi.re.kr/research/topicList?cd=A',
+    'https://www.kdi.re.kr/research/topicList?cd=G',
+    'https://www.kdi.re.kr/research/topicList?cd=H',
+    'https://www.stis.or.kr/board/pds/list?category=20',
+    'https://www.kocca.kr/kocca/bbs/list/B0000141.do?menuNo=204145',
+    'https://www.lgbr.co.kr/business/list.do?rankOptions=TITLE/50,CONTENTS_PDF/30,KEYWORD/100,KEYWORD_TOP/100',
+    'https://www.lgbr.co.kr/economy/list.do?rankOptions=TITLE/50,CONTENTS_PDF/30,KEYWORD/100,KEYWORD_TOP/100',
+    'https://dream.kotra.or.kr/kotranews/cms/com/index.do?MENU_ID=180'
   ]);
   const [newUrl, setNewUrl] = useState('');
   const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
@@ -98,12 +106,20 @@ export default function App() {
             <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Target Sources</h2>
             <div className="flex flex-col gap-2 flex-1 overflow-y-auto custom-scrollbar pr-1">
               {urls.map((u) => {
-                const isKiet = u.includes('kiet.re.kr');
+                let badge = 'OTHER';
+                let style = 'bg-slate-200 text-slate-700';
+
+                if (u.includes('kiet.re.kr')) { badge = 'KIET'; style = 'bg-indigo-100 text-indigo-700'; }
+                else if (u.includes('kdi.re.kr')) { badge = 'KDI'; style = 'bg-blue-100 text-blue-700'; }
+                else if (u.includes('stis.or.kr')) { badge = 'STIS'; style = 'bg-orange-100 text-orange-700'; }
+                else if (u.includes('kocca.kr')) { badge = 'KOCCA'; style = 'bg-teal-100 text-teal-700'; }
+                else if (u.includes('lgbr.co.kr')) { badge = 'LGBR'; style = 'bg-red-100 text-red-700'; }
+                else if (u.includes('kotra.or.kr')) { badge = 'KOTRA'; style = 'bg-sky-100 text-sky-700'; }
+
                 return (
                   <div key={u} className="p-2.5 bg-slate-50 rounded-lg border border-slate-100 flex flex-col gap-1.5 group">
                     <div className="flex items-center justify-between">
-                      {isKiet && <span className="bg-indigo-100 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider w-max">KIET</span>}
-                      {!isKiet && <span className="bg-slate-200 text-slate-700 text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider w-max">OTHER</span>}
+                      <span className={`${style} text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider w-max`}>{badge}</span>
                       <button onClick={() => removeUrl(u)} className="text-slate-300 hover:text-red-500 transition-colors ml-auto">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
