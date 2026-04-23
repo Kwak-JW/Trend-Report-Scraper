@@ -140,8 +140,25 @@ export async function startScrapingJob(jobId: string) {
                 JobManager.addLog(jobId, 'info', `  => URL 조회: ${currentUrl}`);
             }
             
-            await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            const html = await page.content();
+            let html = '';
+            let loadSuccess = false;
+            for (let retry = 0; retry < 3; retry++) {
+                try {
+                    await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    html = await page.content();
+                    loadSuccess = true;
+                    break;
+                } catch (pe) {
+                    JobManager.addLog(jobId, 'warn', `     ⚠️ 목록 페이지 로드 재시도 (${retry + 1}/3): ${pe instanceof Error ? pe.message : pe}`);
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+            }
+            
+            if (!loadSuccess) {
+                JobManager.addLog(jobId, 'error', `     ❌ 목록 페이지 로드 실패, 대상 스킵: ${currentUrl}`);
+                continue;
+            }
+
             const $ = cheerio.load(html);
 
             const dateRegex = /(\d{4})[-.]\s*(\d{2})[-.]\s*(\d{2})/;
@@ -167,17 +184,23 @@ export async function startScrapingJob(jobId: string) {
                  parsedDate = extractKoreanDateFallback(text);
                }
                
+               const isKIETReport = isKIET && text.includes('KIET');
+               
                if (parsedDate && isValid(parsedDate)) {
                   foundValidDates = true;
-                  if (!oldestDateOnPage || parsedDate < oldestDateOnPage) {
-                      oldestDateOnPage = parsedDate;
+
+                  const hasLink = $(el).find('a[href], button[onclick]').length > 0;
+                  if (hasLink) {
+                     if (!oldestDateOnPage || parsedDate < oldestDateOnPage) {
+                         oldestDateOnPage = parsedDate;
+                     }
                   }
 
                   const isWithinRange = 
                     (isAfter(parsedDate, startParsed) || isEqual(parsedDate, startParsed)) &&
                     (isBefore(parsedDate, endParsed) || isEqual(parsedDate, endParsed));
                   
-                  if (isWithinRange) {
+                  if (isWithinRange && hasLink) {
                     candidateRows.push(el);
                   }
                } else {
@@ -224,7 +247,7 @@ export async function startScrapingJob(jobId: string) {
                                     longestAnchor = text;
                                     longestHref = `https://dream.kotra.or.kr/kotranews/cms/news/actionKotraBoardDetail.do?SITE_NO=3&MENU_ID=180&CONTENTS_NO=1&bbsGbn=${m[2]}&bbsSn=${m[3]}&pNttSn=${m[1]}`;
                                 }
-                            } else if (href && !href.startsWith('javascript:')) {
+                            } else if (href && !href.startsWith('javascript:') && !href.startsWith('tel:') && !href.startsWith('mailto:')) {
                                 longestLength = text.length;
                                 longestAnchor = text;
                                 longestHref = href;
@@ -285,200 +308,247 @@ export async function startScrapingJob(jobId: string) {
              JobManager.addLog(jobId, 'warn', `  => 너무 많은 후보 링크가 발견되었습니다. 최상위 50개만 진행합니다.`);
         }
 
-        // 3. Process detail pages
-        for (const detail of finalDetailLinks) {
-            JobManager.addLog(jobId, 'info', `  => 문서 확인 중: ${detail.title.substring(0, 30)}...`);
+        // 3. Process detail pages concurrently using chunks
+        const CONCURRENCY_LIMIT = 5;
+        for (let i = 0; i < finalDetailLinks.length; i += CONCURRENCY_LIMIT) {
+            const chunk = finalDetailLinks.slice(i, i + CONCURRENCY_LIMIT);
             
-            try {
-                const detailPage = await browser.newPage();
-                // Block heavy resources
-                await detailPage.setRequestInterception(true);
-                detailPage.on('request', (req) => {
-                  if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
-                    req.abort();
-                  } else {
-                    req.continue();
-                  }
-                });
-
-                await detailPage.goto(detail.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                const detailHtml = await detailPage.content();
-                const $detail = cheerio.load(detailHtml);
-
-                // If period was not validated from the row, validate it on the detail page
-                const detailText = $detail('body').text();
-                const detailDateMatch = detailText.match(/(\d{4})[-.]\s*(\d{2})[-.]\s*(\d{2})/);
-                let isWithinRange = true;
+            await Promise.all(chunk.map(async (detail) => {
+                JobManager.addLog(jobId, 'info', `  => 문서 확인 중: ${detail.title.substring(0, 30)}...`);
                 
-                if (detailDateMatch) {
-                    const parsedDate = new Date(`${detailDateMatch[1]}-${detailDateMatch[2]}-${detailDateMatch[3]}`);
-                    if (!isNaN(parsedDate.getTime())) {
-                        isWithinRange = 
-                            (isAfter(parsedDate, startParsed) || isEqual(parsedDate, startParsed)) &&
-                            (isBefore(parsedDate, endParsed) || isEqual(parsedDate, endParsed));
-                    }
-                } else {
-                    const parsedFb = extractKoreanDateFallback(detailText);
-                    if (parsedFb && isValid(parsedFb)) {
-                        isWithinRange = 
-                            (isAfter(parsedFb, startParsed) || isEqual(parsedFb, startParsed)) &&
-                            (isBefore(parsedFb, endParsed) || isEqual(parsedFb, endParsed));
-                    }
-                }
-                
-                if (!isWithinRange) {
-                    JobManager.addLog(jobId, 'info', `     => 기간 외 문서이므로 다운로드를 스킵합니다.`);
-                    await detailPage.close();
-                    continue; // Skip the rest
-                }
-
-                // Title Extraction
-                let reportTitle = detail.title;
-                const pageTitle = $detail('title').text().trim();
-                
-                // If title is too short, or meaningless like "다운로드", fallback to the page title
-                if (reportTitle.length < 5 || /(다운로드|상세보기|더보기|자세히보기)/.test(reportTitle)) {
-                    reportTitle = pageTitle || `Report_${Date.now()}`;
-                }
-
-                // File name sanitization (keep spaces, allow basic korean/english/numbers, remove invalid chars)
-                const safeTitle = reportTitle.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().substring(0, 100);
-
-                if (isKOTRA) {
-                    JobManager.addLog(jobId, 'info', `     => KOTRA 특화: 텍스트 및 첨부 이미지 스크래핑 진행...`);
-                    const images = $detail('.board_cont img, .content img, body img').map((i, el) => {
-                        return { src: $detail(el).attr('src'), alt: $detail(el).attr('alt') || `image_${i}` };
-                    }).get();
-
-                    let imageCount = 0;
-                    for (const img of images) {
-                        try {
-                            if (img.src && !img.src.startsWith('data:')) {
-                                const absoluteSrc = new URL(img.src, detail.url).toString();
-                                const agent = new https.Agent({ rejectUnauthorized: false });
-                                const imgRes = await axios.get(absoluteSrc, { responseType: 'arraybuffer', httpsAgent: agent, timeout: 10000 });
-                                
-                                let safeAlt = img.alt ? img.alt : '';
-                                if (!safeAlt) {
-                                  const parts = absoluteSrc.split('/');
-                                  const filename = parts.pop()?.split('?')[0];
-                                  if (filename) safeAlt = filename.split('.')[0];
-                                }
-                                safeAlt = safeAlt.replace(/[\/\\:*?"<>|]/g, '-').trim().substring(0, 50) || `img_${imageCount}`;
-                                const imgName = `${safeTitle}_${safeAlt}.jpg`;
-                                const imgPath = path.join(localPath, imgName);
-                                fs.writeFileSync(imgPath, imgRes.data);
-                                imageCount++;
-                            }
-                        } catch(e) { }
-                    }
-                    if (imageCount > 0) {
-                        JobManager.addLog(jobId, 'success', `     ✅ 이미지 ${imageCount}개 다운로드 완료`);
-                    }
-                }
-
-                // Heuristic: Find Download Link
-                let downloadUrl = '';
-                if (!isKOTRA) {
-                    $detail('a, button').each((_, el) => {
-                       const isButton = el.tagName === 'button';
-                       const href = isButton ? null : $detail(el).attr('href');
-                       const onclick = isButton ? $detail(el).attr('onclick') : null;
-                       const text = $detail(el).text();
-                       
-                       let rawUrl = '';
-                       if (!isButton && href && !href.startsWith('javascript:')) {
-                           rawUrl = href;
-                       } else if (isButton && onclick) {
-                           const match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
-                           if (match && match[1]) {
-                               rawUrl = match[1];
-                           } else {
-                               const windowOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
-                               if (windowOpenMatch && windowOpenMatch[1]) {
-                                   rawUrl = windowOpenMatch[1];
-                               }
-                           }
-                       }
-
-                       if (!rawUrl) return;
-
-                       // Check conditions
-                       if (rawUrl.toLowerCase().includes('.pdf') || 
-                           /(다운|pdf|첨부|원문|file\/?download)/i.test(text) ||
-                           /(file\/?download)/i.test(rawUrl)) {
-                           try {
-                             downloadUrl = new URL(rawUrl, detail.url).toString();
-                           } catch {}
-                       }
+                try {
+                    const detailPage = await browser.newPage();
+                    // Block heavy resources
+                    await detailPage.setRequestInterception(true);
+                    detailPage.on('request', (req) => {
+                      if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                        req.abort();
+                      } else {
+                        req.continue();
+                      }
                     });
-                }
 
+                    let detailHtml = '';
+                    let loadSuccess = false;
+                    for (let retry = 0; retry < 3; retry++) {
+                        try {
+                            await detailPage.goto(detail.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                            detailHtml = await detailPage.content();
+                            loadSuccess = true;
+                            break;
+                        } catch (pe) {
+                            JobManager.addLog(jobId, 'warn', `     ⚠️ 상세 페이지 로드 재시도 (${retry + 1}/3): ${pe instanceof Error ? pe.message : pe}`);
+                            await new Promise(r => setTimeout(r, 2000));
+                        }
+                    }
+                    
+                    if (!loadSuccess) {
+                        JobManager.addLog(jobId, 'error', `     ❌ 상세 페이지 처리를 건너뜁니다.`);
+                        await detailPage.close();
+                        return; // return from this async map function
+                    }
+                    
+                    const $detail = cheerio.load(detailHtml);
 
-                if (downloadUrl) {
-                    JobManager.addLog(jobId, 'info', `     => 첨부 링크 감지, 다운로드 실행 중...`);
-                    // Download File (PDF or other extension)
-                    try {
-                       const extensionUrl = downloadUrl.toLowerCase().split('.').pop()?.split('?')[0];
-                       const fallbackExtension = (extensionUrl && extensionUrl.length <= 4 && extensionUrl !== 'pdf') ? extensionUrl : 'pdf';
-                       
-                       const agent = new https.Agent({ rejectUnauthorized: false });
-                       const response = await axios({
-                           method: 'GET',
-                           url: downloadUrl,
-                           responseType: 'arraybuffer',
-                           timeout: 15000,
-                           httpsAgent: agent
-                       });
-                       
-                       let headerExtension = '';
-                       const contentDisposition = response.headers['content-disposition'];
-                       if (contentDisposition) {
-                           const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i);
-                           if (filenameMatch && filenameMatch[1]) {
-                               const hdFilename = filenameMatch[1].replace(/['"]/g, '');
-                               const hdExt = hdFilename.split('.').pop()?.toLowerCase();
-                               if (hdExt && hdExt.length <= 4) {
-                                   headerExtension = hdExt;
+                    // If period was not validated from the row, validate it on the detail page
+                    const detailText = $detail('body').text();
+                    const detailDateMatch = detailText.match(/(\d{4})[-.]\s*(\d{2})[-.]\s*(\d{2})/);
+                    let isWithinRange = true;
+                    
+                    if (detailDateMatch) {
+                        const parsedDate = new Date(`${detailDateMatch[1]}-${detailDateMatch[2]}-${detailDateMatch[3]}`);
+                        if (!isNaN(parsedDate.getTime())) {
+                            isWithinRange = 
+                                (isAfter(parsedDate, startParsed) || isEqual(parsedDate, startParsed)) &&
+                                (isBefore(parsedDate, endParsed) || isEqual(parsedDate, endParsed));
+                        }
+                    } else {
+                        const parsedFb = extractKoreanDateFallback(detailText);
+                        if (parsedFb && isValid(parsedFb)) {
+                            isWithinRange = 
+                                (isAfter(parsedFb, startParsed) || isEqual(parsedFb, startParsed)) &&
+                                (isBefore(parsedFb, endParsed) || isEqual(parsedFb, endParsed));
+                        }
+                    }
+                    
+                    if (!isWithinRange) {
+                        JobManager.addLog(jobId, 'info', `     => 기간 외 문서이므로 다운로드를 스킵합니다.`);
+                        await detailPage.close();
+                        return; // Skip the rest
+                    }
+
+                    // Title Extraction
+                    let reportTitle = detail.title;
+                    const pageTitle = $detail('title').text().trim();
+                    
+                    // If title is too short, or meaningless like "다운로드", fallback to the page title
+                    if (reportTitle.length < 5 || /(다운로드|상세보기|더보기|자세히보기)/.test(reportTitle)) {
+                        reportTitle = pageTitle || `Report_${Date.now()}`;
+                    }
+
+                    // File name sanitization (keep spaces, allow basic korean/english/numbers, remove invalid chars)
+                    const safeTitle = reportTitle.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().substring(0, 100);
+
+                    if (isKOTRA) {
+                        JobManager.addLog(jobId, 'info', `     => KOTRA 특화: 텍스트 및 첨부 이미지 스크래핑 진행...`);
+                        const images = $detail('.board_cont img, .content img, body img').map((_, el) => {
+                            return { src: $detail(el).attr('src'), alt: $detail(el).attr('alt') || `image_${Date.now()}` };
+                        }).get();
+
+                        let imageCount = 0;
+                        const imgPromises = images.map(async (img) => {
+                            try {
+                                if (img.src && !img.src.startsWith('data:')) {
+                                    const absoluteSrc = new URL(img.src, detail.url).toString();
+                                    const agent = new https.Agent({ rejectUnauthorized: false });
+                                    const imgRes = await axios.get(absoluteSrc, { responseType: 'arraybuffer', httpsAgent: agent, timeout: 10000 });
+                                    
+                                    let safeAlt = img.alt ? img.alt : '';
+                                    if (!safeAlt) {
+                                      const parts = absoluteSrc.split('/');
+                                      const filename = parts.pop()?.split('?')[0];
+                                      if (filename) safeAlt = filename.split('.')[0];
+                                    }
+                                    safeAlt = safeAlt.replace(/[\/\\:*?"<>|]/g, '-').trim().substring(0, 50) || `img_${imageCount}`;
+                                    const imgName = `${safeTitle}_${safeAlt}.jpg`;
+                                    const imgPath = path.join(localPath, imgName);
+                                    fs.writeFileSync(imgPath, imgRes.data);
+                                    imageCount++;
+                                }
+                            } catch(e) { }
+                        });
+                        await Promise.all(imgPromises);
+                        
+                        if (imageCount > 0) {
+                            JobManager.addLog(jobId, 'success', `     ✅ 이미지 ${imageCount}개 다운로드 완료 (병렬수행)`);
+                        }
+                    }
+
+                    // Heuristic: Find Download Link
+                    let downloadUrl = '';
+                    if (!isKOTRA) {
+                        $detail('a, button').each((_, el) => {
+                           const isButton = el.tagName.toLowerCase() === 'button';
+                           const href = isButton ? null : $detail(el).attr('href');
+                           const onclick = isButton ? $detail(el).attr('onclick') : null;
+                           const text = $detail(el).text();
+                           
+                           let rawUrl = '';
+                           if (!isButton && href && !href.startsWith('javascript:')) {
+                               rawUrl = href;
+                           } else if (isButton && onclick) {
+                               const match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
+                               if (match && match[1]) {
+                                   rawUrl = match[1];
+                               } else {
+                                   const windowOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
+                                   if (windowOpenMatch && windowOpenMatch[1]) {
+                                       rawUrl = windowOpenMatch[1];
+                                   }
                                }
                            }
-                       }
-                       
-                       const appliedExtension = headerExtension || fallbackExtension;
-                       const finalFileName = `${safeTitle}.${appliedExtension}`;
 
-                       const filePath = path.join(localPath, finalFileName);
-                       fs.writeFileSync(filePath, response.data);
-                       JobManager.addLog(jobId, 'success', `     ✅ 다운로드 완료 (제목 기준): ${finalFileName}`);
-                    } catch (dlErr: any) {
-                       JobManager.addLog(jobId, 'warn', `     ❌ 첨부 파일 다운로드 중 오류: ${dlErr.message}, 텍스트 본문 추출로 전환합니다.`);
-                       downloadUrl = ''; // Force text extraction fallback
+                           if (!rawUrl) return;
+
+                           // KIET explicit filedownload JS function handling
+                           if (isKIET && isButton && onclick && onclick.includes('filedownload')) {
+                               const m = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"]\)/);
+                               if (m && m.length >= 5) {
+                                   const atch_no = encodeURIComponent(m[1]);
+                                   rawUrl = `/common/file/userDownload?atch_no=${atch_no}&menu_cd=${m[2]}&lang=${m[3]}&no=${m[4]}`;
+                               } else {
+                                   const m2 = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"]\)/);
+                                   // some filedownloads might only take 1 param? Handled generically if possible, else skip
+                               }
+                           }
+                           // another variation of filedownload is via A tag
+                           if (isKIET && !isButton && href && href.includes('javascript:') && $detail(el).attr('onclick') && $detail(el).attr('onclick')?.includes('filedownload')) {
+                               const oc = $detail(el).attr('onclick') || '';
+                               const m = oc.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"]\)/);
+                               if (m && m.length >= 5) {
+                                   const atch_no = encodeURIComponent(m[1]); 
+                                   rawUrl = `/common/file/userDownload?atch_no=${m[1].replace(/&amp;/g, '&')}&menu_cd=${m[2]}&lang=${m[3]}&no=${m[4]}`;
+                               }
+                           }
+
+                           if (rawUrl.startsWith('tel:') || rawUrl.startsWith('mailto:')) return;
+
+                           // Check conditions
+                           if (rawUrl.toLowerCase().includes('.pdf') || 
+                               /(다운|pdf|첨부|원문|file\/?download)/i.test(text) ||
+                               /(file\/?download|userDownload)/i.test(rawUrl)) {
+                               try {
+                                 downloadUrl = new URL(rawUrl, detail.url).toString();
+                               } catch {}
+                           }
+                        });
                     }
-                }
 
-                if (!downloadUrl) {
-                    JobManager.addLog(jobId, 'info', `     => 첨부 없음. 텍스트 본문을 스크래핑합니다.`);
-                    // Remove noise
-                    $detail('script, style, nav, footer, header, noscript, svg').remove();
-                    
-                    const extractedText = $detail('body').text()
-                       .replace(/\s+/g, ' ')
-                       .split('\n')
-                       .map(line => line.trim())
-                       .filter(line => line.length > 0)
-                       .join('\n');
-                       
-                    const filePath = path.join(localPath, `${safeTitle}.txt`);
-                    fs.writeFileSync(filePath, extractedText);
-                    JobManager.addLog(jobId, 'success', `     ✅ 스크래핑/추출 완료 (TXT): ${safeTitle}.txt`);
-                }
+                    if (downloadUrl) {
+                        JobManager.addLog(jobId, 'info', `     => 첨부 링크 감지, 다운로드 실행 중...`);
+                        // Download File (PDF or other extension)
+                        try {
+                           const extensionUrl = downloadUrl.toLowerCase().split('.').pop()?.split('?')[0];
+                           const fallbackExtension = (extensionUrl && extensionUrl.length <= 4 && extensionUrl !== 'pdf') ? extensionUrl : 'pdf';
+                           
+                           const agent = new https.Agent({ rejectUnauthorized: false });
+                           const response = await axios({
+                               method: 'GET',
+                               url: downloadUrl,
+                               responseType: 'arraybuffer',
+                               timeout: 15000,
+                               httpsAgent: agent
+                           });
+                           
+                           let headerExtension = '';
+                           const contentDisposition = response.headers['content-disposition'];
+                           if (contentDisposition) {
+                               const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i);
+                               if (filenameMatch && filenameMatch[1]) {
+                                   const hdFilename = filenameMatch[1].replace(/['"]/g, '');
+                                   const hdExt = hdFilename.split('.').pop()?.toLowerCase();
+                                   if (hdExt && hdExt.length <= 4) {
+                                       headerExtension = hdExt;
+                                   }
+                               }
+                           }
+                           
+                           const appliedExtension = headerExtension || fallbackExtension;
+                           const finalFileName = `${safeTitle}.${appliedExtension}`;
 
-                if (detailPage) {
-                    await detailPage.close();
+                           const filePath = path.join(localPath, finalFileName);
+                           fs.writeFileSync(filePath, response.data);
+                           JobManager.addLog(jobId, 'success', `     ✅ 다운로드 완료 (제목 기준): ${finalFileName}`);
+                        } catch (dlErr: any) {
+                           JobManager.addLog(jobId, 'warn', `     ❌ 첨부 파일 다운로드 중 오류: ${dlErr.message}, 텍스트 본문 추출로 전환합니다.`);
+                           downloadUrl = ''; // Force text extraction fallback
+                        }
+                    }
+
+                    if (!downloadUrl) {
+                        JobManager.addLog(jobId, 'info', `     => 첨부 없음. 텍스트 본문을 스크래핑합니다.`);
+                        // Remove noise
+                        $detail('script, style, nav, footer, header, noscript, svg').remove();
+                        
+                        const extractedText = $detail('body').text()
+                           .replace(/\s+/g, ' ')
+                           .split('\n')
+                           .map(line => line.trim())
+                           .filter(line => line.length > 0)
+                           .join('\n');
+                           
+                        const filePath = path.join(localPath, `${safeTitle}.txt`);
+                        fs.writeFileSync(filePath, extractedText);
+                        JobManager.addLog(jobId, 'success', `     ✅ 스크래핑/추출 완료 (TXT): ${safeTitle}.txt`);
+                    }
+
+                    if (detailPage) {
+                        await detailPage.close();
+                    }
+                } catch (err: any) {
+                    JobManager.addLog(jobId, 'error', `     ❌ 상세 페이지 처리 실패: ${detail.url} - ${err.message}`);
                 }
-            } catch (err: any) {
-                JobManager.addLog(jobId, 'error', `     ❌ 상세 페이지 처리 실패: ${detail.url} - ${err.message}`);
-            }
+            }));
         }
         
         await page.close();
