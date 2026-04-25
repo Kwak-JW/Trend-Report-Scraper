@@ -1,12 +1,19 @@
 import express from 'express';
 import path from 'path';
 import cors from 'cors';
-import { JobManager } from './src/services/jobManager';
-import { startScrapingJob } from './src/services/scraper';
+import { JobManager } from './src/services/jobManager.ts';
+import { startScrapingJob } from './src/services/scraper.ts';
 import fs from 'fs';
 import archiver from 'archiver';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+console.log('Starting server.ts execution...');
 
 async function startServer() {
+  console.log('Initializing express app...');
   const app = express();
   const PORT = 3000;
 
@@ -101,10 +108,14 @@ async function startServer() {
   });
 
   // Vite Integration
-  if (process.env.NODE_ENV !== 'production') {
+  const isProduction = process.env.NODE_ENV === 'production' || !!process.env.K_SERVICE;
+  if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { 
+        middlewareMode: true,
+        hmr: { port: 24678 }
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -116,11 +127,30 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
+  });
+
+  const shutdown = () => {
+    console.log('Shutting down server...');
+    server.close(() => {
+      console.log('Server closed.');
+    });
+    // Force exit immediately so we don't wait for keep-alive connections
+    setTimeout(() => process.exit(0), 100);
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+
+  server.on('error', (e) => {
+    console.error('Express server error:', e);
   });
 }
 
+console.log('Calling startServer()...');
 startServer().catch(err => {
     console.error('Failed to start server:', err);
+    process.exit(1);
 });
+console.log('startServer() dispatched.');

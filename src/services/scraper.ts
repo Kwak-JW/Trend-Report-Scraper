@@ -5,7 +5,7 @@ import path from 'path';
 import axios from 'axios';
 import https from 'https';
 import { parseISO, isAfter, isBefore, isEqual, isValid } from 'date-fns';
-import { JobManager } from './jobManager';
+import { JobManager } from './jobManager.ts';
 
 function extractKoreanDateFallback(text: string): Date | null {
     // try YYYY년 MM월 (일)
@@ -57,64 +57,38 @@ export async function startScrapingJob(jobId: string) {
     for (const targetUrl of urls) {
       JobManager.addLog(jobId, 'info', `🌐 타겟 사이트 분석: ${targetUrl}`);
       
-      const isKIET = targetUrl.includes('kiet.re.kr');
-      const isKIETChina = isKIET && targetUrl.includes('trends/china');
-      const isKDI = targetUrl.includes('kdi.re.kr');
-      const isSTIS = targetUrl.includes('stis.or.kr');
-      const isKOCCA = targetUrl.includes('kocca.kr');
-      const isLGBR = targetUrl.includes('lgbr.co.kr');
-      const isKOTRA = targetUrl.includes('kotra.or.kr');
-
-      // Compute pages to crawl for this targetUrl
+      // Compute pages to crawl for this targetUrl using generic heuristic
       let pagesToCrawl: string[] = [];
+      const u = new URL(targetUrl);
+      let pageParam = '';
+      let isZeroIndexed = false;
+      let step = 1;
+      const paginationKeywords = ['page', 'pg', 'pageidx', 'pageindex', 'pageno', 'startindex', 'offset'];
       
-      if (isKIETChina) {
-          JobManager.addLog(jobId, 'info', `  => KIET 중국산업 브리프 전용 순회 최적화를 적용합니다.`);
-          const startY = startParsed.getFullYear();
-          const startM = startParsed.getMonth() + 1;
-          const endY = endParsed.getFullYear();
-          const endM = endParsed.getMonth() + 1;
-
-          for (let y = endY; y >= startY; y--) {
-              const mStart = (y === startY) ? startM : 1;
-              const mEnd = (y === endY) ? endM : 12;
-              for (let m = mEnd; m >= mStart; m--) {
-                   const mStr = m.toString().padStart(2, '0');
-                   const u = new URL(targetUrl);
-                   u.searchParams.set('year', y.toString());
-                   u.searchParams.set('month', mStr);
-                   pagesToCrawl.push(u.toString());
+      for (const key of u.searchParams.keys()) {
+          if (paginationKeywords.includes(key.toLowerCase())) {
+              pageParam = key;
+              const val = parseInt(u.searchParams.get(key) || '1', 10);
+              if (val === 0) isZeroIndexed = true;
+              if (key.toLowerCase() === 'startindex' || key.toLowerCase() === 'offset') { 
+                  step = 10; 
               }
+              break;
           }
-      } else {
-          // Standard urls. We will start with targetUrl and maybe augment if we need pagination (max 30 pages)
-          for (let i = 1; i <= 30; i++) {
-              if (i === 1) {
-                  pagesToCrawl.push(targetUrl);
-              } else if (isKIET || isKDI) {
-                  const u = new URL(targetUrl);
-                  u.searchParams.set('pg', i.toString());
-                  pagesToCrawl.push(u.toString());
-              } else if (isSTIS) {
-                  const u = new URL(targetUrl);
-                  u.searchParams.set('page', i.toString());
-                  pagesToCrawl.push(u.toString());
-              } else if (isKOCCA) {
-                  let u = targetUrl;
-                  if (u.includes('?')) u += `&pageIndex=${i}`; else u += `?pageIndex=${i}`;
-                  pagesToCrawl.push(u);
-              } else if (isLGBR) {
-                  let u = targetUrl;
-                  if (u.includes('?')) u += `&startIndex=${(i - 1) * 10}`; else u += `?startIndex=${(i - 1) * 10}`;
-                  pagesToCrawl.push(u);
-              } else if (isKOTRA) {
-                  let u = targetUrl;
-                  if (u.includes('?')) u += `&pageNo=${i}`; else u += `?pageNo=${i}`;
-                  pagesToCrawl.push(u);
-              } else {
-                  // For non-KIET/non-KDI, we don't automatically paginate right now unless requested
-                  break;
-              }
+      }
+
+      if (!pageParam) {
+          pageParam = 'page'; // default generic fallback
+      }
+
+      for (let i = 1; i <= 30; i++) {
+          if (i === 1) {
+              pagesToCrawl.push(targetUrl);
+          } else {
+              const u2 = new URL(targetUrl);
+              let val = isZeroIndexed ? (i - 1) * step : i * step - (step - 1);
+              u2.searchParams.set(pageParam, val.toString());
+              pagesToCrawl.push(u2.toString());
           }
       }
 
@@ -133,12 +107,10 @@ export async function startScrapingJob(jobId: string) {
 
         for (let pIdx = 0; pIdx < pagesToCrawl.length; pIdx++) {
             const currentUrl = pagesToCrawl[pIdx];
-            if (pIdx > 0 && !isKIETChina) {
+            if (pIdx > 0) {
                 JobManager.addLog(jobId, 'info', `  => 과거 데이터 탐색 (Page ${pIdx + 1})...`);
             }
-            if (isKIETChina) {
-                JobManager.addLog(jobId, 'info', `  => URL 조회: ${currentUrl}`);
-            }
+            JobManager.addLog(jobId, 'info', `  => URL 조회: ${currentUrl}`);
             
             let html = '';
             let loadSuccess = false;
@@ -172,7 +144,7 @@ export async function startScrapingJob(jobId: string) {
                
                const text = $(el).text();
                
-               // exclude video report (kiet ecolookList)
+               // exclude obvious irrelevants
                if(text.includes('영상 보고서') || text.includes('영상보고서')) return;
 
                const match = text.match(dateRegex);
@@ -183,8 +155,6 @@ export async function startScrapingJob(jobId: string) {
                } else {
                  parsedDate = extractKoreanDateFallback(text);
                }
-               
-               const isKIETReport = isKIET && text.includes('KIET');
                
                if (parsedDate && isValid(parsedDate)) {
                   foundValidDates = true;
@@ -207,15 +177,7 @@ export async function startScrapingJob(jobId: string) {
                    // If no date found directly, check if it's a substantive link
                    const hasLink = $(el).find('a[href], button[onclick]').length > 0;
                    if (hasLink && text.trim().length > 10) {
-                       // for KIET china logic
-                       if (isKIETChina) {
-                           const anchorHref = $(el).find('a').attr('href');
-                           if (anchorHref && anchorHref.includes('chinaDetailView')) {
-                               candidateRows.push(el);
-                           }
-                       } else {
-                           candidateRows.push(el);
-                       }
+                       candidateRows.push(el);
                    }
                }
             });
@@ -223,7 +185,7 @@ export async function startScrapingJob(jobId: string) {
             // Extract Links from candidateRows
             if (candidateRows.length > 0) {
                 for (const row of candidateRows) {
-                    const anchors = $(row).find('a');
+                    const anchors = $(row).find('a, button[onclick]');
                     let longestAnchor = '';
                     let longestLength = 0;
                     let longestHref = '';
@@ -233,38 +195,28 @@ export async function startScrapingJob(jobId: string) {
                         const href = $(a).attr('href');
                         const onclick = $(a).attr('onclick');
                         if (text.length > longestLength) {
-                            if (isLGBR && href && href.includes('fnView')) {
-                                const m = href.match(/fnView\((\d+)\)/);
-                                if (m) {
-                                    longestLength = text.length;
-                                    longestAnchor = text;
-                                    longestHref = 'https://www.lgbr.co.kr/report/viewLayer.alone?idx=' + m[1];
-                                }
-                            } else if (isKOTRA && onclick && onclick.includes('fn_select_kotra_board_detail')) {
-                                const m = onclick.match(/fn_select_kotra_board_detail\([^,]+,\s*(\d+),\s*(\d+),\s*(\d+)\)/);
-                                if (m) {
-                                    longestLength = text.length;
-                                    longestAnchor = text;
-                                    longestHref = `https://dream.kotra.or.kr/kotranews/cms/news/actionKotraBoardDetail.do?SITE_NO=3&MENU_ID=180&CONTENTS_NO=1&bbsGbn=${m[2]}&bbsSn=${m[3]}&pNttSn=${m[1]}`;
-                                }
-                            } else if (href && !href.startsWith('javascript:') && !href.startsWith('tel:') && !href.startsWith('mailto:')) {
+                            if (href && !href.startsWith('javascript:') && !href.startsWith('tel:') && !href.startsWith('mailto:')) {
                                 longestLength = text.length;
                                 longestAnchor = text;
                                 longestHref = href;
+                            } else if (onclick) {
+                                // Try generic matchers for URL in onclick
+                                const m = onclick.match(/(?:location\.href\s*=|window\.open\s*\()\s*['"]([^'"]+)['"]/);
+                                if (m && m[1]) {
+                                    longestLength = text.length;
+                                    longestAnchor = text;
+                                    longestHref = m[1];
+                                }
+                            } else if (href && href.startsWith('javascript:')) {
+                                const m = href.match(/['"](\/[^'\"]+)['"]/);
+                                if (m && m[1]) {
+                                    longestLength = text.length;
+                                    longestAnchor = text;
+                                    longestHref = m[1];
+                                }
                             }
                         }
                     });
-
-                    if (!longestHref) {
-                        const buttons = $(row).find('button[onclick]');
-                        buttons.each((_, b) => {
-                           const onclick = $(b).attr('onclick');
-                           if (onclick) {
-                               const m = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
-                               if (m && m[1]) longestHref = m[1];
-                           }
-                        });
-                    }
 
                     if (!longestAnchor && longestHref) {
                        longestAnchor = $(row).text().replace(/\s+/g, ' ').substring(0, 50).trim();
@@ -279,23 +231,20 @@ export async function startScrapingJob(jobId: string) {
                         } catch {}
                     }
                 }
-            } else if (!isKIETChina && pIdx === 0) {
+            } else if (pIdx === 0) {
                 // No rows found on first page. Treat target URL itself as detail page (fallback)
                 allCandidateDetailLinks.push({ title: $('title').text().trim() || 'Report', url: targetUrl });
             }
 
             // Pagination Break Logic
-            if (!isKIETChina && (isKIET || isKDI || isSTIS || isKOCCA || isLGBR || isKOTRA)) {
-               // If we found dates, and the oldest date on this page is older than our start target, we don't need to load more pages
-               if (foundValidDates && oldestDateOnPage && oldestDateOnPage < startParsed) {
-                   JobManager.addLog(jobId, 'info', `  => 오래된 게시물(시작일 이전) 감지, 페이지 순회를 중단합니다.`);
-                   break;
-               }
-               
-               // If no rows were found at all and we are > page 1, we hit the end
-               if (candidateRows.length === 0 && !foundValidDates) {
-                   break;
-               }
+            if (foundValidDates && oldestDateOnPage && oldestDateOnPage < startParsed) {
+                JobManager.addLog(jobId, 'info', `  => 오래된 게시물(시작일 이전) 감지, 페이지 순회를 중단합니다.`);
+                break;
+            }
+            
+            // If no rows were found at all and we are > page 1, we hit the end
+            if (candidateRows.length === 0 && !foundValidDates) {
+                break;
             }
         } // end of page loop
 
@@ -321,7 +270,7 @@ export async function startScrapingJob(jobId: string) {
                     // Block heavy resources
                     await detailPage.setRequestInterception(true);
                     detailPage.on('request', (req) => {
-                      if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) {
+                      if (['media'].includes(req.resourceType())) {
                         req.abort();
                       } else {
                         req.continue();
@@ -389,46 +338,10 @@ export async function startScrapingJob(jobId: string) {
                     // File name sanitization (keep spaces, allow basic korean/english/numbers, remove invalid chars)
                     const safeTitle = reportTitle.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().substring(0, 100);
 
-                    if (isKOTRA) {
-                        JobManager.addLog(jobId, 'info', `     => KOTRA 특화: 텍스트 및 첨부 이미지 스크래핑 진행...`);
-                        const images = $detail('.board_cont img, .content img, body img').map((_, el) => {
-                            return { src: $detail(el).attr('src'), alt: $detail(el).attr('alt') || `image_${Date.now()}` };
-                        }).get();
-
-                        let imageCount = 0;
-                        const imgPromises = images.map(async (img) => {
-                            try {
-                                if (img.src && !img.src.startsWith('data:')) {
-                                    const absoluteSrc = new URL(img.src, detail.url).toString();
-                                    const agent = new https.Agent({ rejectUnauthorized: false });
-                                    const imgRes = await axios.get(absoluteSrc, { responseType: 'arraybuffer', httpsAgent: agent, timeout: 10000 });
-                                    
-                                    let safeAlt = img.alt ? img.alt : '';
-                                    if (!safeAlt) {
-                                      const parts = absoluteSrc.split('/');
-                                      const filename = parts.pop()?.split('?')[0];
-                                      if (filename) safeAlt = filename.split('.')[0];
-                                    }
-                                    safeAlt = safeAlt.replace(/[\/\\:*?"<>|]/g, '-').trim().substring(0, 50) || `img_${imageCount}`;
-                                    const imgName = `${safeTitle}_${safeAlt}.jpg`;
-                                    const imgPath = path.join(localPath, imgName);
-                                    fs.writeFileSync(imgPath, imgRes.data);
-                                    imageCount++;
-                                }
-                            } catch(e) { }
-                        });
-                        await Promise.all(imgPromises);
-                        
-                        if (imageCount > 0) {
-                            JobManager.addLog(jobId, 'success', `     ✅ 이미지 ${imageCount}개 다운로드 완료 (병렬수행)`);
-                        }
-                    }
-
                     // Heuristic: Find Download Link
                     let downloadUrl = '';
-                    if (!isKOTRA) {
-                        $detail('a, button').each((_, el) => {
-                           const isButton = el.tagName.toLowerCase() === 'button';
+                    $detail('a, button').each((_, el) => {
+                       const isButton = el.tagName.toLowerCase() === 'button';
                            const href = isButton ? null : $detail(el).attr('href');
                            const onclick = isButton ? $detail(el).attr('onclick') : null;
                            const text = $detail(el).text();
@@ -448,28 +361,9 @@ export async function startScrapingJob(jobId: string) {
                                }
                            }
 
-                           if (!rawUrl) return;
+                            if (!rawUrl) return;
 
-                           // KIET explicit filedownload JS function handling
-                           if (isKIET && isButton && onclick && onclick.includes('filedownload')) {
-                               const m = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"]\)/);
-                               if (m && m.length >= 5) {
-                                   const atch_no = encodeURIComponent(m[1]);
-                                   rawUrl = `/common/file/userDownload?atch_no=${atch_no}&menu_cd=${m[2]}&lang=${m[3]}&no=${m[4]}`;
-                               } else {
-                                   const m2 = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"]\)/);
-                                   // some filedownloads might only take 1 param? Handled generically if possible, else skip
-                               }
-                           }
-                           // another variation of filedownload is via A tag
-                           if (isKIET && !isButton && href && href.includes('javascript:') && $detail(el).attr('onclick') && $detail(el).attr('onclick')?.includes('filedownload')) {
-                               const oc = $detail(el).attr('onclick') || '';
-                               const m = oc.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"]\)/);
-                               if (m && m.length >= 5) {
-                                   const atch_no = encodeURIComponent(m[1]); 
-                                   rawUrl = `/common/file/userDownload?atch_no=${m[1].replace(/&amp;/g, '&')}&menu_cd=${m[2]}&lang=${m[3]}&no=${m[4]}`;
-                               }
-                           }
+                           // Generic JS function extraction? Unpredictable, so we just use what rawUrl caught above.
 
                            if (rawUrl.startsWith('tel:') || rawUrl.startsWith('mailto:')) return;
 
@@ -482,7 +376,6 @@ export async function startScrapingJob(jobId: string) {
                                } catch {}
                            }
                         });
-                    }
 
                     if (downloadUrl) {
                         JobManager.addLog(jobId, 'info', `     => 첨부 링크 감지, 다운로드 실행 중...`);
@@ -526,20 +419,41 @@ export async function startScrapingJob(jobId: string) {
                     }
 
                     if (!downloadUrl) {
-                        JobManager.addLog(jobId, 'info', `     => 첨부 없음. 텍스트 본문을 스크래핑합니다.`);
-                        // Remove noise
-                        $detail('script, style, nav, footer, header, noscript, svg').remove();
+                        JobManager.addLog(jobId, 'info', `     => 첨부 없음. 페이지 본문을 PDF로 변환합니다.`);
                         
-                        const extractedText = $detail('body').text()
-                           .replace(/\s+/g, ' ')
-                           .split('\n')
-                           .map(line => line.trim())
-                           .filter(line => line.length > 0)
-                           .join('\n');
-                           
-                        const filePath = path.join(localPath, `${safeTitle}.txt`);
-                        fs.writeFileSync(filePath, extractedText);
-                        JobManager.addLog(jobId, 'success', `     ✅ 스크래핑/추출 완료 (TXT): ${safeTitle}.txt`);
+                        try {
+                            // 브라우저 컨텍스트 내에서 불필요한 요소 제거 및 이미지 로딩 대기
+                            await detailPage.evaluate(async () => {
+                                const selectorsToRemove = ['nav', 'header', 'footer', 'aside', '.gnb', '.lnb', '.pagination', '.top_menu', '.bottom_menu', '#header', '#footer'];
+                                document.querySelectorAll(selectorsToRemove.join(',')).forEach(el => {
+                                    if (el && el.remove) el.remove();
+                                });
+                                
+                                // 이미지 로딩 대기
+                                const images = Array.from(document.querySelectorAll('img'));
+                                await Promise.all(images.map(img => {
+                                    if (img.complete) return Promise.resolve();
+                                    return new Promise(resolve => {
+                                        img.onload = resolve;
+                                        img.onerror = resolve;
+                                        // 너무 오래 걸리지 않게 타임아웃 설정
+                                        setTimeout(resolve, 3000);
+                                    });
+                                }));
+                            });
+
+                            const filePath = path.join(localPath, `${safeTitle}.pdf`);
+                            await detailPage.pdf({
+                                path: filePath,
+                                format: 'A4',
+                                printBackground: true,
+                                margin: { top: '20px', right: '20px', bottom: '20px', left: '20px' }
+                            });
+                            
+                            JobManager.addLog(jobId, 'success', `     ✅ 본문 스크래핑 및 PDF 변환 완료: ${safeTitle}.pdf`);
+                        } catch (pdfErr: any) {
+                            JobManager.addLog(jobId, 'error', `     ❌ PDF 변환 실패: ${pdfErr.message}`);
+                        }
                     }
 
                     if (detailPage) {

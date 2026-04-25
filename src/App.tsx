@@ -171,6 +171,7 @@ export default function App() {
 
             <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 flex flex-col gap-4 border-t border-slate-100 pt-4">
               {Object.entries(groupedUrls).map(([badge, list]) => {
+                const urlList = list as string[];
                 const colors = BADGE_COLORS[badge] || BADGE_COLORS.OTHER;
                 return (
                   <div key={badge} className="flex gap-3 items-start border-b border-slate-100 pb-4 last:border-0 last:pb-0">
@@ -178,7 +179,7 @@ export default function App() {
                       {badge}
                     </div>
                     <div className="flex-1 flex flex-col gap-2 min-w-0">
-                      {list.map(u => (
+                      {urlList.map(u => (
                         <div key={u} className="flex items-center justify-between bg-slate-50 border border-slate-100 px-3 py-2 rounded-md group hover:bg-slate-100 transition-colors">
                           <span className="text-xs truncate font-medium text-slate-600 block flex-1" title={u}>{u}</span>
                           <button onClick={() => removeUrl(u)} className="text-slate-300 hover:text-red-500 transition-colors ml-2 shrink-0">
