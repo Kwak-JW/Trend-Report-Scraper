@@ -132,6 +132,36 @@ export async function startScrapingJob(jobId: string) {
             }
 
             const $ = cheerio.load(html);
+            
+            if (pIdx === 0) {
+                // Dynamically discover year/month based pagination if no generic pageParam is present in URL
+                const hasYearSelect = $('select[name="year"]').length > 0;
+                const hasMonthSelect = $('select[name="month"]').length > 0;
+                const pageParamExists = paginationKeywords.some(k => currentUrl.toLowerCase().includes(k) || $('a').toArray().some(a => $(a).attr('href')?.toLowerCase().includes(k)));
+                
+                if (hasYearSelect && hasMonthSelect && !pageParamExists) {
+                    JobManager.addLog(jobId, 'info', `  => 연도/월(Year/Month) 기반 아코디언/조회 폼 감지, 순회 방식을 변경합니다.`);
+                    const startY = startParsed.getFullYear();
+                    const startM = startParsed.getMonth() + 1;
+                    const endY = endParsed.getFullYear();
+                    const endM = endParsed.getMonth() + 1;
+                    
+                    const newPages = [];
+                    for (let y = endY; y >= startY; y--) {
+                        const mStart = (y === startY) ? startM : 1;
+                        const mEnd = (y === endY) ? endM : 12;
+                        for (let m = mEnd; m >= mStart; m--) {
+                            const u = new URL(targetUrl);
+                            u.searchParams.set('year', y.toString());
+                            u.searchParams.set('month', m.toString().padStart(2, '0'));
+                            if (u.toString() !== currentUrl) {
+                                newPages.push(u.toString());
+                            }
+                        }
+                    }
+                    pagesToCrawl = [currentUrl, ...newPages].slice(0, 30);
+                }
+            }
 
             const dateRegex = /(\d{4})[-.]\s*(\d{2})[-.]\s*(\d{2})/;
             const candidateRows: any[] = [];
@@ -139,7 +169,7 @@ export async function startScrapingJob(jobId: string) {
             let oldestDateOnPage: Date | null = null;
             let foundValidDates = false;
 
-            $('tr, li, .item, .list_item, .card, .board_list > div').each((_, el) => {
+            $('tr, li, .item, .list_item, .card, .t_box, .rcnt_wrap, .board_list > div').each((_, el) => {
                if ($(el).closest('nav, header, footer, .pagination, .gnb').length > 0) return;
                
                const text = $(el).text();
@@ -189,11 +219,38 @@ export async function startScrapingJob(jobId: string) {
                     let longestAnchor = '';
                     let longestLength = 0;
                     let longestHref = '';
+                    let directDownloadUrl = '';
 
                     anchors.each((_, a) => {
                         const text = $(a).text().trim();
                         const href = $(a).attr('href');
                         const onclick = $(a).attr('onclick');
+
+                        // Ignore document viewer/popups
+                        if (href && (href.includes('view.jsp') || href.includes('viewer') || href.includes('preview') || href.includes('flexer'))) return;
+                        if (onclick && (onclick.includes('view.jsp') || onclick.includes('viewer') || onclick.includes('preview') || onclick.includes('flexer'))) return;
+
+                        // Check for direct inline JS downloads (like KIET filedownload)
+                        if (onclick && onclick.includes('filedownload')) {
+                            const m = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"]\)/);
+                            if (m && m.length >= 5) {
+                                directDownloadUrl = `/common/file/userDownload?atch_no=${encodeURIComponent(m[1].replace(/&amp;/g, '&'))}&menu_cd=${m[2]}&lang=${m[3]}&no=${m[4]}`;
+                            } else {
+                                const m2 = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"]\)/);
+                                if (m2 && m2[1]) directDownloadUrl = m2[1]; 
+                            }
+                        } else if (href && !href.startsWith('javascript:') && (href.toLowerCase().endsWith('.pdf') || href.toLowerCase().endsWith('.hwp') || href.toLowerCase().endsWith('.zip'))) {
+                            directDownloadUrl = href;
+                        } else if (onclick && /(?:location\.href\s*=|window\.open\s*\()\s*['"]([^'"]+)['"]/.test(onclick)) {
+                            const mMatch = onclick.match(/(?:location\.href\s*=|window\.open\s*\()\s*['"]([^'"]+)['"]/);
+                            if (mMatch && mMatch[1]) {
+                               const extUrl = mMatch[1];
+                               if (extUrl.toLowerCase().includes('.pdf') || extUrl.toLowerCase().includes('download') || /(file\/?download|userDownload)/i.test(extUrl)) {
+                                   directDownloadUrl = extUrl;
+                               }
+                            }
+                        }
+
                         if (text.length > longestLength) {
                             if (href && !href.startsWith('javascript:') && !href.startsWith('tel:') && !href.startsWith('mailto:')) {
                                 longestLength = text.length;
@@ -218,15 +275,30 @@ export async function startScrapingJob(jobId: string) {
                         }
                     });
 
+                    // For accordions where no detail link exists, the longest text might be just inside a toggle button/anchor.
+                    // If we have a directDownloadUrl but no detail link, we must still capture the title!
+                    if (!longestHref && directDownloadUrl) {
+                         const titleSearchText = $(row).text().replace(/\s+/g, ' ');
+                         const allTexts: string[] = [];
+                         $(row).find('strong, p, div, span, a').each((_, el) => {
+                             const t = $(el).text().trim();
+                             if (t.length > 10 && t.length < 150) allTexts.push(t);
+                         });
+                         allTexts.sort((a,b) => b.length - a.length);
+                         if (allTexts.length > 0) longestAnchor = allTexts[0];
+                         else longestAnchor = titleSearchText.substring(0, 50).trim();
+                    }
+
                     if (!longestAnchor && longestHref) {
                        longestAnchor = $(row).text().replace(/\s+/g, ' ').substring(0, 50).trim();
                     }
 
-                    if (longestHref) {
+                    if (longestHref || directDownloadUrl) {
                         try {
-                            const absoluteUrl = new URL(longestHref, currentUrl).toString();
-                            if (!allCandidateDetailLinks.find(d => d.url === absoluteUrl)) {
-                                allCandidateDetailLinks.push({ title: longestAnchor, url: absoluteUrl });
+                            const urlToUse = longestHref ? new URL(longestHref, currentUrl).toString() : currentUrl;
+                            const dUrl = directDownloadUrl ? new URL(directDownloadUrl, currentUrl).toString() : undefined;
+                            if (!allCandidateDetailLinks.find(d => d.url === urlToUse && (d as any).directDownloadUrl === dUrl)) {
+                                allCandidateDetailLinks.push({ title: longestAnchor, url: urlToUse, directDownloadUrl: dUrl } as any);
                             }
                         } catch {}
                     }
@@ -339,43 +411,61 @@ export async function startScrapingJob(jobId: string) {
                     const safeTitle = reportTitle.replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().substring(0, 100);
 
                     // Heuristic: Find Download Link
-                    let downloadUrl = '';
-                    $detail('a, button').each((_, el) => {
-                       const isButton = el.tagName.toLowerCase() === 'button';
-                           const href = isButton ? null : $detail(el).attr('href');
-                           const onclick = isButton ? $detail(el).attr('onclick') : null;
-                           const text = $detail(el).text();
-                           
-                           let rawUrl = '';
-                           if (!isButton && href && !href.startsWith('javascript:')) {
-                               rawUrl = href;
-                           } else if (isButton && onclick) {
-                               const match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
-                               if (match && match[1]) {
-                                   rawUrl = match[1];
-                               } else {
-                                   const windowOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
-                                   if (windowOpenMatch && windowOpenMatch[1]) {
-                                       rawUrl = windowOpenMatch[1];
+                    let downloadUrl = (detail as any).directDownloadUrl || '';
+                    if (!downloadUrl) {
+                        $detail('a, button').each((_, el) => {
+                           const isButton = el.tagName.toLowerCase() === 'button';
+                               const href = isButton ? null : $detail(el).attr('href');
+                               const onclick = isButton ? $detail(el).attr('onclick') : null;
+                               const text = $detail(el).text();
+                               
+                               // Ignore document viewer links or preview buttons
+                               if (/(미리보기|보기|뷰어|viewer|preview)/i.test(text) && !/(다운|다운로드|download)/i.test(text)) return;
+                               if (href && (href.includes('view.jsp') || href.includes('flexer') || href.includes('viewer'))) return;
+                               if (onclick && (onclick.includes('view.jsp') || onclick.includes('flexer') || onclick.includes('viewer'))) return;
+                               
+                               let rawUrl = '';
+                               if (!isButton && href && !href.startsWith('javascript:')) {
+                                   rawUrl = href;
+                               } else if (isButton && onclick) {
+                                   const match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
+                                   if (match && match[1]) {
+                                       rawUrl = match[1];
+                                   } else {
+                                       const windowOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
+                                       if (windowOpenMatch && windowOpenMatch[1]) {
+                                           rawUrl = windowOpenMatch[1];
+                                       }
+                                   }
+                                   
+                                   // Generic JS download handler
+                                   if (!rawUrl && onclick.includes('filedownload')) {
+                                       const m = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"],\s*['\"]([^'"]+)['\"]\)/);
+                                       if (m && m.length >= 5) {
+                                           rawUrl = `/common/file/userDownload?atch_no=${encodeURIComponent(m[1].replace(/&amp;/g, '&'))}&menu_cd=${m[2]}&lang=${m[3]}&no=${m[4]}`;
+                                       } else {
+                                           const m2 = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"]\)/);
+                                           if (m2 && m2[1]) rawUrl = m2[1];
+                                       }
                                    }
                                }
-                           }
 
-                            if (!rawUrl) return;
+                                if (!rawUrl) return;
 
-                           // Generic JS function extraction? Unpredictable, so we just use what rawUrl caught above.
+                               // Generic JS function extraction? Unpredictable, so we just use what rawUrl caught above.
 
-                           if (rawUrl.startsWith('tel:') || rawUrl.startsWith('mailto:')) return;
+                               if (rawUrl.startsWith('tel:') || rawUrl.startsWith('mailto:')) return;
 
-                           // Check conditions
-                           if (rawUrl.toLowerCase().includes('.pdf') || 
-                               /(다운|pdf|첨부|원문|file\/?download)/i.test(text) ||
-                               /(file\/?download|userDownload)/i.test(rawUrl)) {
-                               try {
-                                 downloadUrl = new URL(rawUrl, detail.url).toString();
-                               } catch {}
-                           }
-                        });
+                               // Check conditions
+                               if (rawUrl.toLowerCase().includes('.pdf') || 
+                                   /(다운|pdf|첨부|원문|file\/?download)/i.test(text) ||
+                                   /(file\/?download|userDownload)/i.test(rawUrl)) {
+                                   try {
+                                     downloadUrl = new URL(rawUrl, detail.url).toString();
+                                   } catch {}
+                               }
+                            });
+                    }
 
                     if (downloadUrl) {
                         JobManager.addLog(jobId, 'info', `     => 첨부 링크 감지, 다운로드 실행 중...`);
@@ -407,6 +497,13 @@ export async function startScrapingJob(jobId: string) {
                            }
                            
                            const appliedExtension = headerExtension || fallbackExtension;
+                           
+                           // If the detected attachment is merely an image, txt file, or a dynamic web page extension, it's likely a false positive (e.g. print icon, banner, or web link).
+                           // We should reject it and trigger the full-page PDF generation fallback.
+                           if (!appliedExtension || /^(txt|png|jpg|jpeg|gif|svg|webp|html|htm|jsp|php|do|asp|aspx)$/i.test(appliedExtension)) {
+                               throw new Error('Detected attachment is a web page, text, or image file, which is likely a false positive. Forcing PDF generation.');
+                           }
+
                            const finalFileName = `${safeTitle}.${appliedExtension}`;
 
                            const filePath = path.join(localPath, finalFileName);
