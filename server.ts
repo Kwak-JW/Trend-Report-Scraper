@@ -21,6 +21,10 @@ async function startServer() {
   app.use(express.json());
 
   // API Routes
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok" });
+  });
+
   app.post('/api/jobs', (req, res) => {
     const { urls, startDate, endDate, localPath } = req.body;
     

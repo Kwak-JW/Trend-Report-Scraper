@@ -164,7 +164,7 @@ export async function startScrapingJob(jobId: string) {
             }
 
             const dateRegex = /(\d{4})[-.]\s*(\d{2})[-.]\s*(\d{2})/;
-            const candidateRows: any[] = [];
+            const candidateRowsRaw: { el: any, hasDate: boolean }[] = [];
             
             let oldestDateOnPage: Date | null = null;
             let foundValidDates = false;
@@ -200,17 +200,23 @@ export async function startScrapingJob(jobId: string) {
                     (isAfter(parsedDate, startParsed) || isEqual(parsedDate, startParsed)) &&
                     (isBefore(parsedDate, endParsed) || isEqual(parsedDate, endParsed));
                   
-                  if (isWithinRange && hasLink) {
-                    candidateRows.push(el);
+                  const isNotice = /(^|\s|\[)(공지|안내)(\]|\s|$)/.test(text);
+
+                  if (isWithinRange && hasLink && !isNotice) {
+                    candidateRowsRaw.push({ el, hasDate: true });
                   }
                } else {
                    // If no date found directly, check if it's a substantive link
                    const hasLink = $(el).find('a[href], button[onclick]').length > 0;
                    if (hasLink && text.trim().length > 10) {
-                       candidateRows.push(el);
+                       candidateRowsRaw.push({ el, hasDate: false });
                    }
                }
             });
+
+            const candidateRows = foundValidDates 
+               ? candidateRowsRaw.filter(r => r.hasDate).map(r => r.el) 
+               : candidateRowsRaw.map(r => r.el);
 
             // Extract Links from candidateRows
             if (candidateRows.length > 0) {
@@ -415,8 +421,8 @@ export async function startScrapingJob(jobId: string) {
                     if (!downloadUrl) {
                         $detail('a, button').each((_, el) => {
                            const isButton = el.tagName.toLowerCase() === 'button';
-                               const href = isButton ? null : $detail(el).attr('href');
-                               const onclick = isButton ? $detail(el).attr('onclick') : null;
+                               const href = $detail(el).attr('href');
+                               const onclick = $detail(el).attr('onclick');
                                const text = $detail(el).text();
                                
                                // Ignore document viewer links or preview buttons
@@ -425,9 +431,9 @@ export async function startScrapingJob(jobId: string) {
                                if (onclick && (onclick.includes('view.jsp') || onclick.includes('flexer') || onclick.includes('viewer'))) return;
                                
                                let rawUrl = '';
-                               if (!isButton && href && !href.startsWith('javascript:')) {
+                               if (href && !href.startsWith('javascript:') && href !== '#') {
                                    rawUrl = href;
-                               } else if (isButton && onclick) {
+                               } else if (onclick) {
                                    const match = onclick.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
                                    if (match && match[1]) {
                                        rawUrl = match[1];
@@ -446,9 +452,17 @@ export async function startScrapingJob(jobId: string) {
                                        } else {
                                            const m2 = onclick.match(/filedownload\([^'\"]*['\"]([^'"]+)['\"]\)/);
                                            if (m2 && m2[1]) rawUrl = m2[1];
-                                       }
-                                   }
-                               }
+                                        }
+                                    }
+
+                                    // KOCCA fileDown handler
+                                    if (!rawUrl && onclick.includes('fileDown')) {
+                                        const m = onclick.match(/fileDown\([^\'\"]*[\'\"]([^\'\"]+)[\'\"],\s*[\'\"]([^\'\"]+)[\'\"](?:,\s*[\'\"]([^\'\"]*)[\'\"])?\)/);
+                                        if (m && m.length >= 3) {
+                                            rawUrl = `/common/cmm/fms/FileDown.do?atchFileId=${encodeURIComponent(m[1])}&fileSn=${m[2]}&bbsId=${m[3] || ''}`;
+                                        }
+                                    }
+                                }
 
                                 if (!rawUrl) return;
 
