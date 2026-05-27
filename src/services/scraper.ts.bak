@@ -80,22 +80,9 @@ export async function startScrapingJob(jobId: string) {
       
       JobManager.addLog(jobId, 'info', `🌐 타겟 사이트 분석: ${targetUrl}`);
       
-      let processedTargetUrl = targetUrl;
-      if (processedTargetUrl.includes('kotra.or.kr')) {
-          try {
-              const ktUrl = new URL(processedTargetUrl);
-              const slashStart = startDate.replace(/-/g, '/');
-              const slashEnd = endDate.replace(/-/g, '/');
-              ktUrl.searchParams.set('pStartDt', slashStart);
-              ktUrl.searchParams.set('pEndDt', slashEnd);
-              processedTargetUrl = ktUrl.toString();
-              JobManager.addLog(jobId, 'info', `     => [KOTRA Optimization] 서버 사이드 날짜 범위 필터를 적용했습니다: ${slashStart} ~ ${slashEnd}`);
-          } catch {}
-      }
-      
-      // Compute pages to crawl for this processedTargetUrl using generic heuristic
+      // Compute pages to crawl for this targetUrl using generic heuristic
       let pagesToCrawl: string[] = [];
-      const u = new URL(processedTargetUrl);
+      const u = new URL(targetUrl);
       let pageParam = '';
       let isZeroIndexed = false;
       let step = 1;
@@ -114,7 +101,7 @@ export async function startScrapingJob(jobId: string) {
       }
 
       if (!pageParam) {
-          if (processedTargetUrl.includes('kotra.or.kr')) {
+          if (targetUrl.includes('kotra.or.kr')) {
               pageParam = 'pageNo';
           } else {
               pageParam = 'page'; // default generic fallback
@@ -123,9 +110,9 @@ export async function startScrapingJob(jobId: string) {
 
       for (let i = 1; i <= 30; i++) {
           if (i === 1) {
-              pagesToCrawl.push(processedTargetUrl);
+              pagesToCrawl.push(targetUrl);
           } else {
-              const u2 = new URL(processedTargetUrl);
+              const u2 = new URL(targetUrl);
               let val = isZeroIndexed ? (i - 1) * step : i * step - (step - 1);
               u2.searchParams.set(pageParam, val.toString());
               pagesToCrawl.push(u2.toString());
@@ -147,7 +134,6 @@ export async function startScrapingJob(jobId: string) {
           }
         });
 
-        let anyPageHadValidDates = false;
         for (let pIdx = 0; pIdx < pagesToCrawl.length; pIdx++) {
             if (isCancelled()) {
                 JobManager.addLog(jobId, 'warn', `⏹️ 수집 중단: 목록 탐색을 중단합니다.`);
@@ -164,7 +150,7 @@ export async function startScrapingJob(jobId: string) {
             for (let retry = 0; retry < 3; retry++) {
                 try {
                     // Check if JS custom pageFunction paging is needed (e.g., KDI)
-                    if (pIdx > 0 && currentUrl === processedTargetUrl) {
+                    if (pIdx > 0 && currentUrl === targetUrl) {
                         const pNum = pIdx + 1;
                         const evalResult = await page.evaluate((p) => {
                             if (typeof (window as any).pageFunction === 'function') {
@@ -222,7 +208,7 @@ export async function startScrapingJob(jobId: string) {
                         const mStart = (y === startY) ? startM : 1;
                         const mEnd = (y === endY) ? endM : 12;
                         for (let m = mEnd; m >= mStart; m--) {
-                            const u = new URL(processedTargetUrl);
+                            const u = new URL(targetUrl);
                             u.searchParams.set('year', y.toString());
                             u.searchParams.set('month', m.toString().padStart(2, '0'));
                             if (u.toString() !== currentUrl) {
@@ -275,19 +261,10 @@ export async function startScrapingJob(jobId: string) {
 
                   const hasLink = $(el).find('a[href], button[onclick]').length > 0 || $(el).closest('a[href]').length > 0 || $(el).is('a[href]');
                   if (hasLink) {
-                      if (!oldestDateOnPage || parsedDate < oldestDateOnPage) {
-                          oldestDateOnPage = parsedDate;
-                      }
-                      
-                      const isWithinRange = 
-                        (isAfter(parsedDate, startParsed) || isEqual(parsedDate, startParsed)) &&
-                        (isBefore(parsedDate, endParsed) || isEqual(parsedDate, endParsed));
-                      
-                      const isNotice = /(^|\s|\[)(공지|안내)(\]|\s|$)/.test(text);
-
-                      if (isWithinRange && hasLink && !isNotice) {
-                        candidateRowsRaw.push({ el, hasDate: true, parsedDate });
-                      }
+                     if (!oldestDateOnPage || parsedDate < oldestDateOnPage) {
+                         oldestDateOnPage = parsedDate;
+                             if (isWithinRange && hasLink && !isNotice) {
+                    candidateRowsRaw.push({ el, hasDate: true, parsedDate });
                   }
                } else {
                     // If no date found directly, check if it's a substantive link
@@ -301,13 +278,6 @@ export async function startScrapingJob(jobId: string) {
             const candidateRows = foundValidDates 
                ? candidateRowsRaw.filter(r => r.hasDate).map(r => r.el) 
                : candidateRowsRaw.map(r => r.el);
-
-            if (foundValidDates) {
-                anyPageHadValidDates = true;
-            } else if (pIdx > 0 && anyPageHadValidDates) {
-                JobManager.addLog(jobId, 'info', `  => [Paging Break] 현재 페이지에서 탐색된 유효한 보고서 포스트가 없으며, 이전 페이지에서 이미 수집된 결과가 존재하므로 루프를 종료합니다.`);
-                break;
-            }
 
             // Extract Links from candidateRows
             let newlyAddedCount = 0;
@@ -378,9 +348,6 @@ export async function startScrapingJob(jobId: string) {
                             const text = $(a).text().trim();
                             const href = $(a).attr('href');
                             const onclick = $(a).attr('onclick');
-
-                            // Ignore system/navigation menu links immediately
-                            if (/(달력|calendar|지도|국가정보|지역정보|sns|공유|share|목록|이전화면|홈으로|프린트|인쇄|저작권|개인정보|공공데이터|뷰어|viewer|기관소개|회사소개|이용약관|로그인|회원가입|마이페이지|Q&A|통계|사이트맵|바로가기|패밀리사이트)/i.test(text)) return;
 
                             // Ignore document viewer/popups
                             if (href && (href.includes('view.jsp') || href.includes('viewer') || href.includes('preview') || href.includes('flexer'))) return;
@@ -465,21 +432,11 @@ export async function startScrapingJob(jobId: string) {
                             const urlToUse = longestHref ? new URL(longestHref, currentUrl).toString() : currentUrl;
                             const dUrl = directDownloadUrl ? new URL(directDownloadUrl, currentUrl).toString() : undefined;
                             
-                            // Check KOTRA URL integrity - only crawl actual details, skip categories or menu navigation
-                            if (urlToUse.includes('kotra.or.kr')) {
-                                if (!urlToUse.includes('pNttSn') && !urlToUse.includes('bbsSn') && !urlToUse.includes('actionKotraBoardDetail.do')) {
-                                    continue;
-                                }
-                            }
-
-                            const cleanTitle = longestAnchor.trim();
-                            if (cleanTitle.length > 3 && !/(달력|calendar|지도|국가정보|지역정보|sns|공유|share|목록|이전화면|홈으로|프린트|인쇄|저작권|개인정보|공공데이터|뷰어|viewer|기관소개|회사소개|이용약관|로그인|회원가입|마이페이지|Q&A|통계|사이트맵|바로가기|패밀리사이트)/i.test(cleanTitle)) {
-                                // Check if already processed
-                                const isProcessed = allCandidateDetailLinks.some(l => l.url === urlToUse);
-                                if (!isProcessed) {
-                                    allCandidateDetailLinks.push({ title: cleanTitle, url: urlToUse, directDownloadUrl: dUrl });
-                                    newlyAddedCount++;
-                                }
+                            // Check if already processed
+                            const isProcessed = allCandidateDetailLinks.some(l => l.url === urlToUse);
+                            if (!isProcessed) {
+                                allCandidateDetailLinks.push({ title: longestAnchor, url: urlToUse, directDownloadUrl: dUrl });
+                                newlyAddedCount++;
                             }
                         } catch {}
                     }
@@ -496,13 +453,28 @@ export async function startScrapingJob(jobId: string) {
             if (oldestDateOnPage && oldestDateOnPage < startParsed) {
                 JobManager.addLog(jobId, 'info', `  => [Paging Break] 해당 페이지의 가장 오래된 날짜(${oldestDateOnPage.toISOString().split('T')[0]})가 조회 시작일(${startDate})보다 이전이므로 과거 페이지 조회를 종료합니다.`);
                 break;
+            }            JobManager.addLog(jobId, 'info', `  => [Paging Break] 새로 발견된 리포트 링크가 없어 과거 페이지 순회를 종료합니다.`);
+                break;
+            }
+
+            if (oldestDateOnPage && oldestDateOnPage < startParsed) {                       if (!isProcessed) {
+                                allCandidateDetailLinks.push({ title: longestAnchor, url: urlToUse, directDownloadUrl: dUrl });
+                            }
+                        } catch {}
+                    }
+                }
+            }
+            
+            if (oldestDateOnPage && oldestDateOnPage < startParsed) {
+                JobManager.addLog(jobId, 'info', `  => [Paging Break] 해당 페이지의 가장 오래된 날짜(${oldestDateOnPage.toISOString().split('T')[0]})가 조회 시작일(${startDate})보다 이전이므로 과거 페이지 조회를 종료합니다.`);
+                break;
             }
         }
         
         await page.close().catch(() => {});
 
       } catch (err: any) {
-        JobManager.addLog(jobId, 'error', `❌ 사이트 접근 실패 (${processedTargetUrl}): ${err.message}`);
+        JobManager.addLog(jobId, 'error', `❌ 사이트 접근 실패 (${targetUrl}): ${err.message}`);
       }
     }
 
@@ -511,15 +483,10 @@ export async function startScrapingJob(jobId: string) {
     // Chunk detail pages to process them in chunks
     const chunkSize = 3;
     for (let i = 0; i < allCandidateDetailLinks.length; i += chunkSize) {
-        if (isCancelled()) {
-          JobManager.addLog(jobId, 'warn', '⏹️ 수집 중단: 상세 페이지 분석을 즉시 중단합니다.');
-          break;
-        }
         const chunk = allCandidateDetailLinks.slice(i, i + chunkSize);
         JobManager.addLog(jobId, 'info', `🔄 상세 페이지 분석 중 [Chunk ${Math.floor(i / chunkSize) + 1}/${Math.ceil(allCandidateDetailLinks.length / chunkSize)}]...`);
 
         await Promise.all(chunk.map(async (detail) => {
-            if (isCancelled()) return;
             let detailPage: any = null;
             try {
                 detailPage = await browser.newPage();
@@ -532,7 +499,6 @@ export async function startScrapingJob(jobId: string) {
                 let detailHtml = '';
                 
                 if (detail.directDownloadUrl) {
-
                     detailSuccess = true;
                 } else {
                     for (let retry = 0; retry < 3; retry++) {
@@ -557,9 +523,6 @@ export async function startScrapingJob(jobId: string) {
                 }
                 const $detail = cheerio.load(detailHtml);
 
-                // 상세안내 화면에서 불필요한 메타 링크(GNB, LNB, 공유, 댓글, 푸터, 사이드바 등)로 인한 가짜 다운로딩 감지를 범용 차단
-                $detail('header, footer, nav, aside, .gnb, .lnb, .header, .footer, .quick, .quick_menu, .side, .side_bar, .related_report, .sns_share, .comment_area, .pagination, #header, #footer, .bottom_menu, .top_menu, .bookmark, .share, .nation_areainfo, .sub_top_wrap, .sub_visual, .side_menu, .s_nav, .quick_menu, .right_area, .btn_area, .comment_write, #tabMenu, .top_banner, #topBanner, .footer_wrap, .header_wrap, .util_menu, .location_nav, .relation_list, .sub_sec_head, .detail_btm_btn, .file_list_area, .print_btn, .sns_share_box').remove();
-
                 const safeTitle = detail.title.replace(/[/\\?%*:|"<>\s]/g, '_').substring(0, 100).trim() || 'Untitled';
 
                 // Heuristic: Find Download Link
@@ -569,9 +532,6 @@ export async function startScrapingJob(jobId: string) {
                         const text = $detail(el).text().trim();
                         const href = $detail(el).attr('href');
                         const onclick = $detail(el).attr('onclick');
-
-                        // Ignore non-report download links (GNB/Footer leakage or UI icons)
-                        if (/(달력|calendar|지도|국가정보|지역정보|sns|공유|share|목록|이전화면|홈으로|프린트|인쇄|저작권|개인정보|공공데이터|뷰어|viewer)/i.test(text)) return;
                         
                         // Ignore document viewer links or preview buttons
                         if (/(미리보기|보기|뷰어|viewer|preview)/i.test(text) && !/(다운|다운로드|download)/i.test(text)) return;
@@ -675,16 +635,7 @@ export async function startScrapingJob(jobId: string) {
                     
                     try {
                         await detailPage.evaluate(async () => {
-                            const selectorsToRemove = [
-                                'nav', 'header', 'footer', 'aside', '.gnb', '.lnb', '.pagination', 
-                                '.top_menu', '.bottom_menu', '#header', '#footer', '.sns_share', 
-                                '.comment_area', '.nation_areainfo', '.related_report', '.bookmark', 
-                                '.share', '.sub_top_wrap', '.sub_visual', '.side_menu', '.s_nav', 
-                                '.quick_menu', '.right_area', '.btn_area', '.comment_write', '#tabMenu', 
-                                '.top_banner', '#topBanner', '.footer_wrap', '.header_wrap', 
-                                '.util_menu', '.location_nav', '.relation_list', '.sub_sec_head', 
-                                '.detail_btm_btn', '.file_list_area', '.print_btn', '.sns_share_box'
-                            ];
+                            const selectorsToRemove = ['nav', 'header', 'footer', 'aside', '.gnb', '.lnb', '.pagination', '.top_menu', '.bottom_menu', '#header', '#footer'];
                             document.querySelectorAll(selectorsToRemove.join(',')).forEach(el => {
                                 if (el && el.remove) el.remove();
                             });

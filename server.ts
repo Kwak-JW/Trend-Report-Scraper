@@ -5,10 +5,7 @@ import { JobManager } from './src/services/jobManager.ts';
 import { startScrapingJob } from './src/services/scraper.ts';
 import fs from 'fs';
 import archiver from 'archiver';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 console.log('Starting server.ts execution...');
 
@@ -39,6 +36,19 @@ async function startServer() {
     startScrapingJob(jobId);
 
     res.json({ jobId });
+  });
+
+  app.post('/api/jobs/:id/stop', (req, res) => {
+    const jobId = req.params.id;
+    const job = JobManager.getJob(jobId);
+
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+
+    JobManager.cancelJob(jobId);
+    res.json({ success: true, status: job.status });
   });
 
   app.get('/api/jobs/:id/logs', (req, res) => {
@@ -107,12 +117,25 @@ async function startServer() {
     });
 
     archive.pipe(res);
-    archive.directory(targetFolder, false);
+
+    // Only package files downloaded during the current run to prevent bundling old files from other jobs
+    if (job.downloadedFiles && job.downloadedFiles.length > 0) {
+      for (const filePath of job.downloadedFiles) {
+        if (fs.existsSync(filePath)) {
+          const filename = path.basename(filePath);
+          archive.file(filePath, { name: filename });
+        }
+      }
+    } else {
+      // Create a descriptor text file if no files were downloaded to prevent empty ZIP issues
+      archive.append('No files were downloaded for this run within the selected date range.', { name: 'no_files.txt' });
+    }
+
     archive.finalize();
   });
 
   // Vite Integration
-  const isProduction = process.env.NODE_ENV === 'production' || !!process.env.K_SERVICE;
+  const isProduction = process.env.NODE_ENV === 'production' || (!!process.env.K_SERVICE && fs.existsSync(path.join(process.cwd(), 'dist/index.html')));
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

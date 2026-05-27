@@ -7,7 +7,7 @@ export interface JobConfig {
   localPath: string;
 }
 
-export type JobStatus = 'pending' | 'running' | 'completed' | 'error';
+export type JobStatus = 'pending' | 'running' | 'completed' | 'error' | 'cancelled';
 
 export interface LogEntry {
   timestamp: string;
@@ -21,6 +21,7 @@ export interface Job {
   status: JobStatus;
   logs: LogEntry[];
   emitter: EventEmitter;
+  downloadedFiles?: string[];
 }
 
 export class JobManager {
@@ -34,6 +35,7 @@ export class JobManager {
       status: 'pending',
       logs: [],
       emitter: new EventEmitter(),
+      downloadedFiles: [],
     };
     this.jobs.set(id, job);
     return id;
@@ -41,6 +43,26 @@ export class JobManager {
 
   static getJob(id: string): Job | undefined {
     return this.jobs.get(id);
+  }
+
+  static cancelJob(id: string) {
+    const job = this.jobs.get(id);
+    if (job) {
+      job.status = 'cancelled';
+      this.addLog(id, 'warn', '⏹️ 사용자가 수집 작업을 중단했습니다.');
+    }
+  }
+
+  static addDownloadedFile(id: string, filePath: string) {
+    const job = this.jobs.get(id);
+    if (job) {
+      if (!job.downloadedFiles) {
+        job.downloadedFiles = [];
+      }
+      if (!job.downloadedFiles.includes(filePath)) {
+        job.downloadedFiles.push(filePath);
+      }
+    }
   }
 
   static addLog(id: string, type: LogEntry['type'], message: string) {

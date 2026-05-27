@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Plus, Trash2, Play, Download, AlertCircle, CheckCircle2, ChevronRight, Info } from 'lucide-react';
+import { Plus, Trash2, Play, Download, AlertCircle, CheckCircle2, ChevronRight, Info, Square } from 'lucide-react';
 
 const getBadge = (u: string) => {
   if (u.includes('kiet.re.kr')) return 'KIET';
@@ -127,6 +127,18 @@ export default function App() {
     }
   };
 
+  const stopJob = async () => {
+    if (!jobId) return;
+    try {
+      await fetch(`/api/jobs/${jobId}/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err: any) {
+      alert(`중단 요청 중 에러: ${err.message}`);
+    }
+  };
+
   return (
     <div className="h-screen w-full flex flex-col text-slate-900 bg-slate-50 font-sans overflow-hidden">
       <header className="h-16 px-6 lg:px-8 border-b bg-white flex items-center justify-between shrink-0 shadow-sm z-10">
@@ -247,16 +259,28 @@ export default function App() {
             </div>
           </div>
 
-          <button
-            onClick={startJob}
-            disabled={status === 'running'}
-            className={`shrink-0 w-full py-3 rounded-lg text-sm font-bold tracking-wide flex items-center justify-center gap-2 transition-all shadow-sm ${
-              status === 'running' ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white'
-            }`}
-          >
-            <Play className="w-4 h-4 fill-current" />
-            {status === 'running' ? 'AUTOMATION RUNNING...' : 'RUN AUTOMATION'}
-          </button>
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={startJob}
+              disabled={status === 'running'}
+              className={`flex-1 py-3 rounded-lg text-sm font-bold tracking-wide flex items-center justify-center gap-2 transition-all shadow-sm ${
+                status === 'running' ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+              }`}
+            >
+              <Play className="w-4 h-4 fill-current" />
+              {status === 'running' ? 'RUNNING...' : 'RUN AUTOMATION'}
+            </button>
+            {status === 'running' && (
+              <button
+                onClick={stopJob}
+                className="px-5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm animate-pulse"
+                title="수집 중단"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                STOP
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 flex flex-col gap-6 overflow-hidden min-h-[400px]">
@@ -270,7 +294,7 @@ export default function App() {
             </div>
             <div className="bg-white p-4 rounded-xl border shadow-sm">
               <div className="text-[11px] font-bold uppercase text-slate-500 tracking-wider mb-1">Target Sites</div>
-              <div className="text-xl font-bold text-slate-800 font-mono">{urls.length} <span className="text-slate-400 text-xs font-medium font-sans">items</span></div>
+              <div className="text-xl font-bold text-slate-800 font-mono">{activeUrls.length} <span className="text-slate-400 text-xs font-medium font-sans">items</span></div>
             </div>
             <div className="bg-white p-4 rounded-xl border shadow-sm hidden sm:block">
               <div className="text-[11px] font-bold uppercase text-slate-500 tracking-wider mb-1">Logs Events</div>
