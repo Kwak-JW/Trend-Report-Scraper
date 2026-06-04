@@ -74,12 +74,14 @@
 ```bash
 npm install
 ```
-*(인터넷 환경에 맞추어 프로그램 전산 분석에 꼭 필요한 수집 전용 가상 장비와 디자이너 도구를 안전하게 자동 배치하기 시작합니다. 단 몇 초에서 몇 분 정도 기다리시면 조용하게 준비가 성공 완료됩니다.)*
+*(인터넷 환경에 맞추어 프로그램 전산 분석에 꼭 필요한 수집 전용 가상 장비와 디자이너 도구를 안전하게 자동 배치하기 시작합니다. 단 몇 초에서 몇 분 정도 기다리시면 조용하게 준비가 성공 완료됩니다. 모든 종속성 패키지는 보안 감사(npm audit fix)가 사전 적용 및 검수 완료되어 별도의 보안 조치 없이 안심하고 사용하실 수 있습니다.)*
 
 ---
 
 ### [Step 4] 수집기 대시보드 기동 및 사용하기
 모든 예비 준비가 완료되어 가동할 마지막 단계입니다. 아래 기동 시작 키워드를 넣고 `[Enter]`를 칩니다.
+
+> 🚨 **주의사항**: 일반 사용자는 반드시 **`npm run dev`** 명령어를 사용해 구동해 주세요. (타 프로그램에서 자주 쓰이는 `npm start`를 바로 입력하시면 사전 빌드 파일이 없다는 오류가 발생합니다.)
 
 ```bash
 npm run dev
@@ -98,6 +100,8 @@ npm run dev
 - **Frontend Specs**: React 18 / Tailwind CSS / Lucide React Icons
 - **Backend Core**: Express / Puppeteer Browser Module / Cheerio / Axios
 - **Production Build (프로덕션 상용 서비스 배포 시)**:
+  > 상용 환경으로 배포하기 전, 백엔드와 프론트엔드의 압축 컴파일(빌드)이 반드시 선행되어야 합니다. 빌드 없이 `npm start`를 실행하면 `MODULE_NOT_FOUND (dist/server.cjs)` 에러가 발생합니다.
+
   ```bash
   npm run build
   npm start
