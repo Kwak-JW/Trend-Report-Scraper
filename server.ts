@@ -5,7 +5,10 @@ import { JobManager } from './src/services/jobManager.ts';
 import { startScrapingJob } from './src/services/scraper.ts';
 import fs from 'fs';
 import archiver from 'archiver';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 console.log('Starting server.ts execution...');
 
@@ -147,7 +150,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = __dirname.endsWith('dist') ? __dirname : path.join(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
