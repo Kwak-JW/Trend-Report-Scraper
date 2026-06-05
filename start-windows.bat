@@ -1,7 +1,6 @@
 @echo off
-:: 실행 위치를 현재 배치 파일이 있는 폴더로 고정 (관리자 권한 실행 오류 방지)
-cd /d "%~dp0"
 chcp 65001 >nul
+cd /d "%~dp0"
 title Trend Report Auto-Scraper 실행기
 
 echo ========================================================
@@ -25,12 +24,11 @@ echo       서버가 구동 중일 때는 이 검은 창을 닫지 마세요!
 echo           (종료하려면 이 창의 X 버튼을 클릭하세요)
 echo ========================================================
 
-:: timeout은 일부 환경에서 오류가 뜨므로 안정적인 ping 대기로 교체
+:: timeout 대신 안정적인 ping 딜레이 기법을 사용하여 브라우저 자동 오픈 실행
 start "" cmd /c "ping 127.0.0.1 -n 4 >nul && start http://localhost:3000"
 
 :: 서버 실행
 call npm run dev
-pause
 exit /b
 
 :NoNode
