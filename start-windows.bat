@@ -23,8 +23,8 @@ echo       Do NOT close this window while running!
 echo       To stop the server, just close this window.
 echo ========================================================
 
-REM Wait a little and open the dashboard in browser
-start "" cmd /c "ping 127.0.0.1 -n 4 >nul && start http://localhost:3000"
+REM Wait for port 3000 to be active in the background before launching the browser
+start "" powershell -WindowStyle Hidden -Command "while ($true) { try { $c = New-Object System.Net.Sockets.TcpClient('127.0.0.1', 3000); if ($c.Connected) { $c.Close(); break } } catch {} Start-Sleep -Milliseconds 500 }; Start-Process 'http://localhost:3000'"
 
 REM Start server
 call npm run dev
