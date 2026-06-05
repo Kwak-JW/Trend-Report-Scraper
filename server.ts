@@ -135,7 +135,7 @@ async function startServer() {
   });
 
   // Vite Integration
-  const isProduction = process.env.NODE_ENV === 'production' || (!!process.env.K_SERVICE && fs.existsSync(path.join(process.cwd(), 'dist/index.html')));
+  const isProduction = process.env.NODE_ENV === 'production';
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

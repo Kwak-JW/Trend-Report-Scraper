@@ -13,7 +13,8 @@ echo - Node.js is ready.
 
 echo.
 echo [2/3] Checking and installing packages...
-echo (This may take a few minutes for the first run)
+echo (This will only download application dependencies, skipping heavy Chromium downloads)
+set PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 call npm install
 
 echo.

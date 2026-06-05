@@ -32,6 +32,59 @@ function extractKoreanDateFallback(text: string): Date | null {
     return null;
 }
 
+function getExecutablePath(): string | undefined {
+  // 1. If an explicit environment variables specifies the path, respect it first
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
+  // 2. Windows-specific standard paths for Chrome and Edge
+  if (process.platform === 'win32') {
+    const windowsPaths = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      path.join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    ];
+    for (const p of windowsPaths) {
+      if (p && fs.existsSync(p)) {
+        return p;
+      }
+    }
+  }
+
+  // 3. macOS-specific standard paths
+  if (process.platform === 'darwin') {
+    const macOSPaths = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    ];
+    for (const p of macOSPaths) {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+  }
+
+  // 4. Linux-specific standard paths (supports Cloud Run / Linux containers where Chrome is installed at system level)
+  if (process.platform === 'linux') {
+    const linuxPaths = [
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+    ];
+    for (const p of linuxPaths) {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 export async function startScrapingJob(jobId: string) {
   const job = JobManager.getJob(jobId);
   if (!job) return;
@@ -57,7 +110,8 @@ export async function startScrapingJob(jobId: string) {
     const endParsed = parseISO(endDate);
 
     JobManager.addLog(jobId, 'info', `🔄 브라우저 엔진을 시작합니다...`);
-    const browser = await puppeteer.launch({
+    
+    const launchOptions: any = {
       headless: true,
       args: [
         '--no-sandbox',
@@ -68,7 +122,17 @@ export async function startScrapingJob(jobId: string) {
         '--no-zygote',
         '--disable-gpu'
       ],
-    });
+    };
+
+    const detectedExecutablePath = getExecutablePath();
+    if (detectedExecutablePath) {
+      launchOptions.executablePath = detectedExecutablePath;
+      JobManager.addLog(jobId, 'info', `🔍 로컬/시스템 크롬 브라우저를 발견하여 사용합니다: ${detectedExecutablePath}`);
+    } else {
+      JobManager.addLog(jobId, 'info', `🔍 기본 Puppeteer 내장 브라우저 경로 또는 시스템을 사용합니다.`);
+    }
+
+    const browser = await puppeteer.launch(launchOptions);
 
     const allCandidateDetailLinks: { title: string, url: string, directDownloadUrl?: string }[] = [];
 

@@ -149,7 +149,6 @@ export default function App() {
             </svg>
           </div>
           <h1 className="text-xl font-bold tracking-tight text-slate-800">Trend Report <span className="text-indigo-600">Scraper</span></h1>
-          <span className="text-[10px] sm:text-xs font-bold px-2 py-0.5 sm:py-1 bg-slate-100 text-slate-500 rounded border hidden sm:inline-block tracking-wider uppercase">Auto Engine</span>
         </div>
         <div className="flex items-center space-x-4">
           <div className="items-center space-x-2 px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-100 hidden sm:flex">
@@ -268,7 +267,7 @@ export default function App() {
               }`}
             >
               <Play className="w-4 h-4 fill-current" />
-              {status === 'running' ? 'RUNNING...' : 'RUN AUTOMATION'}
+              {status === 'running' ? 'RUNNING...' : 'RUN SCRAPER'}
             </button>
             {status === 'running' && (
               <button
@@ -310,7 +309,7 @@ export default function App() {
                   <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/50"></div>
                   <div className="w-2.5 h-2.5 rounded-full bg-green-500/50"></div>
                 </div>
-                <span className="text-[10px] text-slate-400 font-mono ml-2 uppercase tracking-wider">Crawler Console v1.02</span>
+                <span className="text-[10px] text-slate-400 font-mono ml-2 uppercase tracking-wider">Scraper Console v1.0</span>
               </div>
               <span className="text-[10px] text-slate-500 font-mono">UTF-8 / SYSTEM</span>
             </div>
@@ -344,7 +343,7 @@ export default function App() {
                 <h3 className="text-indigo-900 font-bold text-sm flex items-center mb-0.5">
                   <CheckCircle2 className="w-4 h-4 mr-1.5" /> All Tasks Completed
                 </h3>
-                <p className="text-indigo-600/80 text-[11px] font-medium leading-tight max-w-sm">If running via Cloud UI sandbox, click download below to retrieve the aggregate ZIP archive.</p>
+                <p className="text-indigo-600/80 text-[11px] font-medium leading-tight max-w-sm">Saved in the default downloads folder. If you want to change it, specify the path in SAVE PATH (LOCAL).</p>
               </div>
               <a
                 href={`/api/jobs/${jobId}/download`}
